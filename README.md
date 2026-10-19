@@ -7,7 +7,7 @@
 ## Hızlı Başlangıç
 ```bash
 cd app
-cp .env.example .env      # gerçek Supabase değerlerini yaz
+# .env repoda mevcut (Supabase projesi gnagqrqhzlqixafihiqo'ya bağlı) — kopyalamana gerek yok
 npm ci
 npm run dev               # http://localhost:3000
 npm test                  # vitest birim testleri
@@ -18,7 +18,7 @@ npm run lint              # tsc --noEmit
 | Yol | Açıklama |
 |-----|----------|
 | `app/src` | Uygulama kaynak kodu (`lib/supabase.ts` env'den okur) |
-| `app/.env.example` | Ortam değişkeni şablonu (VITE_SUPABASE_*, Sentry, Capacitor) |
+| `app/.env` · `.env.example` | Gerçek Supabase değerleri (.env, commit'li) + şablon |
 | `app/capacitor.config.json` | Android/iOS paketleme yapılandırması |
 | `app/netlify.toml` · `netlify.toml` | Web/app ve panel deploy konfigürasyonları |
 | `functions/admin-users/` | Supabase Edge Function (hesap yönetimi; service_role burada) |
@@ -37,7 +37,5 @@ deploy, Netlify, Capacitor/Android, Sentry, yedekleme, Play Store, CI) için:
 👉 **[`docs/kurulum.md`](docs/kurulum.md)**
 
 ## SQL Çalıştırma Sırası
-1. `supabase-kurulum.sql` (temel şema + RLS)
-2. `panel/1-supabase-panel-guncelleme.sql` (panel özellikleri)
-3. `sql/uygulama-duzeltme.sql` (uygulama uyumu + has_perm sertleştirme)
-4. `sql/audit-retention.sql` (opsiyonel, pg_cron açıksa)
+Mevcut proje (`gnagqrqhzlqixafihiqo`) için tek dosya yeterli: **`sql/MEVCUT-SUPABASE-ICIN.sql`** ✅ çalıştırıldı.
+Sıfırdan kurulumda sıralı alternatif: 1) `supabase-kurulum.sql` → 2) `panel/1-supabase-panel-guncelleme.sql` → 3) `sql/uygulama-duzeltme.sql` → 4) `sql/audit-retention.sql` (pg_cron açıksa).

@@ -1,1 +1,8 @@
 node_modules/
+dist/
+*.local
+.env.local
+.env.*.local
+# NOT: app/.env bilinçli olarak commit edilir (yalnızca PUBLIC anon key içerir).
+# service_role / private anahtar içeren hiçbir dosya commit EDİLEMEZ.
+

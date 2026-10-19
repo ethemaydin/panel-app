@@ -7,8 +7,8 @@ Yeni bir kurulumda baştan sona uygulayın.
 
 ## 0) Ön hazırlık
 
-- [ ] GitHub repo (`english-base` benzeri isim) oluşturuldu.
-- [ ] Supabase hesabı açıldı → yeni proje (bölge: `eu-central-1` Frankfurt önerilir).
+- [x] GitHub repo (`english-base`) oluşturuldu.
+- [x] Supabase projesi hazır: **`gnagqrqhzlqixafihiqo`** — URL ve anon key `app/.env` + panele girildi.
 - [ ] Netlify veya Vercel hesabı (panel + web yayınları için).
 - [ ] Alan adı (opsiyonel ama mağaza/Push notification için şiddetle önerilir).
 - [ ] Google Cloud Console hesabı (FCM / Firebase — Android bildirimleri için).
@@ -17,14 +17,18 @@ Yeni bir kurulumda baştan sona uygulayın.
 
 ## 1) Supabase Proje Yapılandırması
 
-### 1.1 Anahtarlar
-Supabase Dashboard → **Project Settings → API**:
-- `Project URL` → `VITE_SUPABASE_URL`
-- `anon public` key → `VITE_SUPABASE_ANON_KEY`
-- `service_role` key → **yalnızca Edge Function içinde** kullanılır; asla istemciye/repoya koymayın.
+### 1.1 Anahtarlar — ✅ BU PROJE İÇİN ZATEN YAPILANDIRILDI
+Supabase projesi: **`gnagqrqhzlqixafihiqo`** (`https://gnagqrqhzlqixafihiqo.supabase.co`)
 
-Değerleri `app/.env.example` dosyasını kopyalayarak `app/.env` içine yazın
-(`.gitignore` `.env`'i zaten hariç tutuyor).
+- `app/.env` dosyasına Project URL + **anon public key** girildi ve repoya commit'lendi
+  (anon key kamuoyuna açık bir anahtardır; tüm koruma RLS policy'lerindedir).
+- Panel (`panel/index.html`) aynı URL+key'i kullanıyor — uygulama ve panel **aynı projeye** bağlı.
+- ⚠️ `service_role` key hâlâ hiçbir yerde yok; yalnızca Edge Function secret'ı olarak aşağıdaki
+  bölüm 2'de tanımlanacak. Bu anahtarı asla repoya/istemciye koymayın.
+
+Netlify/Vercel'e yayınlarken ayrıca Site settings → Environment variables'a aynı iki değeri
+(`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) girmenize gerek **yoktur** — `.env` depoda olduğu
+için build otomatik alır. (İsterseniz platform env'leri her zaman önceliklidir.)
 
 ### 1.2 SQL Şemaları (SIRALI ÇALIŞTIRMA!)
 Dashboard → **SQL Editor**, aşağıdaki sırayla çalıştırın:
@@ -72,11 +76,11 @@ Panel, toplu öğrenci/öğretmen hesabı açmak için bu fonksiyona ihtiyaç du
 (service_role anahtarı sunucuda kalır).
 
 ```bash
-cd app   # supabase CLI projesi bağlama
 npm i -g supabase
 supabase login
-supabase link --project-ref <PROJE_REF>
+supabase link --project-ref gnagqrqhzlqixafihiqo
 supabase functions deploy admin-users        # panel/2-edge-function-admin-users.ts kaynak alınır
+supabase secrets set SERVICE_ROLE_KEY=<Dashboard→Settings→API→service_role> --project-ref gnagqrqhzlqixafihiqo
 ```
 
 > Fonksiyon dosyası `functions/admin-users/index.ts` adıyla Supabase klasörüne yerleştirilmelidir
@@ -84,8 +88,8 @@ supabase functions deploy admin-users        # panel/2-edge-function-admin-users
 
 Deploy sonrası test:
 ```bash
-curl -X POST https://<PROJE_REF>.functions.supabase.co/admin-users \
-  -H "Authorization: Bearer <ANON_KEY>" -d '{"action":"ping"}'
+curl -X POST https://gnagqrqhzlqixafihiqo.functions.supabase.co/admin-users \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduYWdxcnFoemxxaXhhZmloaXFvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyNTM5OTAsImV4cCI6MjEwNzgyOTk5MH0.VrmUQ_S6Pj9YdgKwPFwOf0cdsXSQP6ZQT4v-uxTsNnI" -d '{"action":"ping"}'
 ```
 
 ---
