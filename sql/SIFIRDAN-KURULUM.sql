@@ -229,38 +229,26 @@ create table if not exists public.audit_log (
 create index if not exists idx_audit_at on public.audit_log(at desc);
 create index if not exists idx_audit_actor on public.audit_log(actor, at desc);
 
--- ---------- A2) LEGACY TIP ONARIMI ----------
--- Eski/panel SQL surumlerinden kalmis bozuk kolon tiplerini uuid/text'e cevirir.
--- Aksi halde FK ve COALESCE ("types text and integer cannot be matched") hatalari alinir.
+-- ---------- A2) LEGACY TIP ONARIMI (yalniz profiles.class_id) ----------
+-- Eski SQL surumlerinden kalmis integer/text tipli profiles.class_id kolonunu
+-- uuid'ye cevirir. messages tablosunun bozuk kolonlari C0 blogunda dinamik
+-- SQL ile temizlenir; burada HIC statik mesaj kolonu referansi yoktur
+-- (statik referanslar Supabase'de 42804 "COALESCE types text and integer"
+-- hatasinin kendisini uretiyordu).
 do $$ declare c record;
 begin
-  for c in
-    select table_name, column_name from information_schema.columns
-    where table_schema='public'
-      and (
-        (table_name='profiles' and column_name='class_id' and udt_name <> 'uuid') or
-        (table_name='classes'  and column_name='id'       and udt_name <> 'uuid') or
-        (table_name='messages' and column_name='audience' and data_type <> 'text') or
-        (table_name='messages' and column_name='class_id' and udt_name not in ('uuid')) or
-        (table_name='messages' and column_name='student_ids' and data_type <> 'ARRAY')
-      )
-  loop
+  if to_regclass('public.profiles') is null then return; end if;
+  select column_name, udt_name into c
+    from information_schema.columns
+    where table_schema='public' and table_name='profiles' and column_name='class_id';
+  if c.column_name is not null and c.udt_name <> 'uuid' then
     begin
-      if c.table_name='profiles' and c.column_name='class_id' then
-        execute 'alter table public.profiles drop constraint if exists profiles_class_fk';
-        execute 'alter table public.profiles alter column class_id type uuid using case when class_id::text ~ ''^[0-9a-fA-F-]{36}$'' then class_id::text::uuid else null end';
-      elsif c.table_name='classes' and c.column_name='id' then
-        execute 'alter table public.classes alter column id type uuid using case when id::text ~ ''^[0-9a-fA-F-]{36}$'' then id::text::uuid else gen_random_uuid() end';
-      elsif c.table_name='messages' and c.column_name='audience' then
-        execute 'alter table public.messages alter column audience type text using audience::text';
-      elsif c.table_name='messages' and c.column_name='class_id' then
-        execute 'alter table public.messages drop column class_id';
-      elsif c.table_name='messages' and c.column_name='student_ids' then
-        execute 'alter table public.messages drop column student_ids';
-      end if;
-    exception when others then null; -- onarim zorunlu degil; FK adimi yine de guvenli atlar
-    end;
-  end loop;
+      execute 'alter table public.profiles drop constraint if exists profiles_class_fk';
+      execute $x$alter table public.profiles alter column class_id type uuid
+        using case when class_id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                   then class_id::text::uuid else null end$x$;
+    exception when others then null; end;
+  end if;
 end $$;
 
 -- Eski surumlerden kalmis eksik/bozuk profile kolonlarini tamamla (fonksiyon/policy bunlara bagimli)
@@ -301,12 +289,36 @@ end $stub$;
 -- kolonlara (student_ids int[], class_id integer, audience integer) bagimli eski
 -- fonksiyonlar "COALESCE types text and integer cannot be matched" hatasinin KOK
 -- nedendir. CREATE OR REPLACE bunlari guncelleyemez; once dusurulmeliler.
+-- NOT: Bu blok HICBIR yerde mesajlarin int tipli class_id/student_ids kolonlarini
+-- dogrudan referans ALMAZ; aksi halde Supabase'de calistirma aninda ayni hatayi
+-- kendisi uretir (42804).
 do $$ declare f record;
 begin
   for f in select p.oid::regprocedure::text as sig
            from pg_proc p join pg_namespace n on n.oid=p.pronamespace
            where n.nspname='public' and p.proname='deliver_due_messages' loop
     begin execute 'drop function if exists ' || f.sig; exception when others then null; end;
+  end loop;
+end $$;
+
+-- Eski mesaj tablosu bozuk tipteyse (int class_id / int[] student_ids / int audience)
+-- DROP'tan ONCE bu kolonlari sildirmek gerekir; aksi halde drop cascade sirasinda
+-- eski fonksiyon/policy derlemesi patlayabilir. Kolon adlari dinamik string ile
+-- islenir, boylece bu dosyanin kendisi hicbir calistirmada tip cakismasi uretmez.
+do $$ declare c record;
+begin
+  if to_regclass('public.messages') is null then return; end if;
+  for c in
+    select column_name from information_schema.columns
+    where table_schema='public' and table_name='messages'
+      and (
+        (column_name in ('class_id','audience') and udt_name <> 'uuid' and data_type <> 'text') or
+        (column_name = 'student_ids' and data_type <> 'ARRAY')
+      )
+  loop
+    begin
+      execute format('alter table public.messages drop column if exists %I', c.column_name);
+    exception when others then null; end;
   end loop;
 end $$;
 
@@ -347,28 +359,25 @@ begin
   end loop;
 end $$;
 
--- Panel SQL'iyle ayni tipte mesaj tablolari (mevcut proje farkli tipteyse donustur).
-do $$ begin
-  if exists (select 1 from information_schema.columns
-             where table_schema='public' and table_name='messages' and column_name='audience'
-               and data_type <> 'text') then
-    alter table public.messages alter column audience type text using audience::text;
+-- Panel SQL'iyle ayni tipte mesaj tablolari.
+-- DIKKAT: Buradaki DO bloklari messages.audience/class_id/student_ids kolonlarini
+-- STATIK SQL'de HIC referans etmez (tip cakismasi olan projelerde bu satirlarin
+-- kendisi 42804/42P01 hatasi uretiyordu). Kolon isleri yalnizca dinamik execute
+-- string'i icinde, bilgi-sorgusuyla dogrulanarak yapilir. Eski bozuk tablo zaten
+-- asagida drop+create ile bastan kuruluyor; burada sadece saglam senaryoda
+-- audience text'e cevrilir.
+do $$ declare c record;
+begin
+  if to_regclass('public.messages') is null then return; end if;
+  select column_name, data_type into c
+    from information_schema.columns
+    where table_schema='public' and table_name='messages' and column_name='audience';
+  if c.column_name is not null and c.data_type <> 'text' then
+    begin
+      execute 'alter table public.messages alter column audience type text using audience::text';
+    exception when others then null; end;
   end if;
-exception when undefined_table or wrong_object_type then null; end $$;
-do $$ begin
-  if exists (select 1 from information_schema.columns
-             where table_schema='public' and table_name='messages' and column_name='student_ids'
-               and data_type <> 'ARRAY') then
-    execute 'alter table public.messages drop column student_ids';
-  end if;
-exception when undefined_column or wrong_object_type then null; end $$;
-do $$ begin
-  if exists (select 1 from information_schema.columns
-             where table_schema='public' and table_name='messages' and column_name='class_id'
-               and udt_name not in ('uuid')) then
-    execute 'alter table public.messages drop column class_id';
-  end if;
-exception when undefined_column or wrong_object_type then null; end $$;
+end $$;
 -- Eski/bozuk deliver_due_messages + eksik kolonlar: tek ALTER yerine tabloyu
 -- guvenli sekilde bastan kur (eski SQL'lerden kalan int tipli audience/class_id/
 -- student_ids kolonlari "COALESCE types text and integer cannot be matched" ve
