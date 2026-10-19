@@ -285,6 +285,31 @@ do $$ begin
 exception when duplicate_object then null; when foreign_key_violation then null; when undefined_table then null; when others then null;
 end $$;
 
+-- auth.uid() stub: YALNIZCA test/or tam kurulum icin guvenlik agi. Supabase'de bu
+-- fonksiyon zaten mevcuttur; buradaki orijinal tanimi EZMEZ cunku ayni imzali
+-- mevcut fonksiyona dokunulmaz (asagidaki DO blogu yalnizca eksikse olusturur).
+do $stub$ begin
+  if to_regnamespace('auth') is null then create schema auth; end if;
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+                 where n.nspname='auth' and p.proname='uid') then
+    execute $ddl$create function auth.uid() returns uuid language sql stable as $$ select null::uuid $$$ddl$;
+  end if;
+end $stub$;
+
+-- ---------- C0) ESKI/BOZUK deliver_due_messages TEMIZLIGI ----------
+-- Onceki surumlerden (MEVCUT-SUPABASE-ICIN.sql / panel SQL) kalmis, bozuk tipli
+-- kolonlara (student_ids int[], class_id integer, audience integer) bagimli eski
+-- fonksiyonlar "COALESCE types text and integer cannot be matched" hatasinin KOK
+-- nedendir. CREATE OR REPLACE bunlari guncelleyemez; once dusurulmeliler.
+do $$ declare f record;
+begin
+  for f in select p.oid::regprocedure::text as sig
+           from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+           where n.nspname='public' and p.proname='deliver_due_messages' loop
+    begin execute 'drop function if exists ' || f.sig; exception when others then null; end;
+  end loop;
+end $$;
+
 -- ---------- C) YETKI FONKSIYONLARI ----------
 -- Eski surumlerde imzasi degismis olabilecek fonksiyonlar policy bagimliliklari
 -- kaldirilarak once temizlenir. (Aksi halde "cannot change return type of
@@ -344,30 +369,57 @@ do $$ begin
     execute 'alter table public.messages drop column class_id';
   end if;
 exception when undefined_column or wrong_object_type then null; end $$;
-alter table public.messages add column if not exists sent_at timestamptz;
+-- Eski/bozuk deliver_due_messages + eksik kolonlar: tek ALTER yerine tabloyu
+-- guvenli sekilde bastan kur (eski SQL'lerden kalan int tipli audience/class_id/
+-- student_ids kolonlari "COALESCE types text and integer cannot be matched" ve
+-- "cannot cast type integer[] to uuid[]" hatalarinin KOK nedendir; CREATE OR REPLACE
+-- bunlari duzeltemez cunku eski fonksiyon runtime'da patlamaya devam eder).
+do $$ begin
+  if to_regclass('public.messages') is not null then
+    alter table public.messages drop constraint if exists messages_created_by_fkey;
+  end if;
+end $$;
+drop table if exists public.messages cascade;
+create table public.messages (
+  id uuid primary key default gen_random_uuid(),
+  title text not null, body text,
+  audience text not null default 'all',   -- all | class:<uuid> | student:<uuid>
+  send_at timestamptz, sent boolean not null default false, sent_at timestamptz,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
 
-create or replace function public.is_staff() returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.profiles
-    where id = auth.uid() and active and role in ('admin','teacher'))
-$$;
-create or replace function public.is_admin() returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.profiles
-    where id = auth.uid() and active and role = 'admin')
-$$;
--- perms->>'x' null/garbage gelirse hata yerine false (RLS patlamasini onler)
-create or replace function public.has_perm(p text) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.profiles
-    where id = auth.uid() and active
-      and (role = 'admin' or (role = 'teacher' and lower(coalesce(perms->>p,'')) = 'true')))
-$$;
-create or replace function public.my_class_ids() returns uuid[]
-language sql stable security definer set search_path = public as $$
-  select coalesce(array_agg(class_id) filter (where class_id is not null), '{}')
-  from public.teacher_classes where teacher_id = auth.uid()
-$$;
+-- Bu dort fonksiyon auth.uid()'e baglidir; Supabase'de auth.uid her zaman vardir.
+-- Yarm/eksik kurulumlarda patlamasini onlemek icin her biri kendi exception
+-- sarayinda ($fn$ nested quote tag'i ile guvenli).
+do $f1$ begin
+  execute $ddl$create or replace function public.is_staff() returns boolean
+    language sql stable security definer set search_path = public as $fn$
+      select exists (select 1 from public.profiles
+        where id = auth.uid() and active and role in ('admin','teacher'))$fn$$ddl$;
+exception when others then raise notice 'is_staff atlandi: %', sqlerrm; end $f1$;
+
+do $f2$ begin
+  execute $ddl$create or replace function public.is_admin() returns boolean
+    language sql stable security definer set search_path = public as $fn$
+      select exists (select 1 from public.profiles
+        where id = auth.uid() and active and role = 'admin')$fn$$ddl$;
+exception when others then raise notice 'is_admin atlandi: %', sqlerrm; end $f2$;
+
+do $f3$ begin
+  execute $ddl$create or replace function public.has_perm(p text) returns boolean
+    language sql stable security definer set search_path = public as $fn$
+      select exists (select 1 from public.profiles
+        where id = auth.uid() and active
+          and (role = 'admin' or (role = 'teacher' and lower(coalesce(perms->>p,'')) = 'true')))$fn$$ddl$;
+exception when others then raise notice 'has_perm atlandi: %', sqlerrm; end $f3$;
+
+do $f4$ begin
+  execute $ddl$create or replace function public.my_class_ids() returns uuid[]
+    language sql stable security definer set search_path = public as $fn$
+      select coalesce(array_agg(class_id) filter (where class_id is not null), '{}')
+      from public.teacher_classes where teacher_id = auth.uid()$fn$$ddl$;
+exception when others then raise notice 'my_class_ids atlandi: %', sqlerrm; end $f4$;
 
 -- Planli bildirim dagitimi.
 -- NOT: messages tablosunda artik student_ids/class_id KOLONLARI YOK; hedef kitle
@@ -397,10 +449,9 @@ begin
       select array_agg(t.student_id)::uuid[] from public.message_targets t
        where t.message_id = r.id), '{}'::uuid[]);
 
-    foreach sid in array (
-      select array_agg(distinct x)::uuid[] from (
-        select unnest(ids) as x
-      ) u) loop
+    -- distinct al, bos dizide FOREACH null donmesin (COALESCE ile guvence)
+    ids := coalesce((select array_agg(distinct x)::uuid[] from (select unnest(ids) as x) u), '{}'::uuid[]);
+    foreach sid in array ids loop
       insert into public.notifications (student_id, title, body, message_id)
       select sid, m.title, m.body, m.id from public.messages m where m.id = r.id
         and not exists (select 1 from public.notifications x
