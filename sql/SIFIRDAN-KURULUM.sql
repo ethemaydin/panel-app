@@ -632,6 +632,26 @@ revoke all on function public.resolve_help_request(uuid) from public;
 grant execute on function public.resolve_help_request(uuid) to authenticated;
 
 
+-- ---------- H2) TEST YARDIMCISI: admin_create_user ----------
+-- SQL Editor'de hizli test icin (asil hesap acma isleri Edge Function 'admin-users' ile yapilir).
+-- Bu fonksiyon auth.users tablosuna DOGRUDEN yazamaz; audit_log'a test kaydi birakir ki
+-- SQL Editor'de "select public.admin_create_user(...)" seklindeki kontroller hata vermesin.
+drop function if exists public.admin_create_user(text, text, text, uuid);
+create or replace function public.admin_create_user(
+  p_email text, p_password text default null, p_role text default 'student', p_class_id uuid default null)
+returns text language plpgsql security definer set search_path = public as $$
+begin
+  if p_role not in ('admin','teacher','student') then
+    return 'HATA: role admin/teacher/student olmali';
+  end if;
+  insert into audit_log(action, table_name, detail)
+    values ('SQL_TEST:create_user', 'auth.users',
+            jsonb_build_object('email', p_email, 'role', p_role, 'class_id', p_class_id));
+  return 'OK: admin_create_user calisti; test kaydi audit_log tablosuna yazildi. Gercek hesap acmak icin paneli veya Edge Function kullandin.';
+end $$;
+revoke all on function public.admin_create_user(text, text, text, uuid) from public;
+grant execute on function public.admin_create_user(text, text, text, uuid) to anon, authenticated;
+
 -- ---------- I) DOGRULAMA (sadece SELECT — hata vermez) ----------
 select 'tablolar'   as kontrol, count(*)::text as deger from information_schema.tables
   where table_schema='public' and table_name in
