@@ -36,6 +36,7 @@ Tüm altyapı adımları (Supabase proje ayarları, SQL sırası, storage bucket
 deploy, Netlify, Capacitor/Android, Sentry, yedekleme, Play Store, CI) için:
 👉 **[`docs/kurulum.md`](docs/kurulum.md)**
 
-## SQL Çalıştırma Sırası
-Mevcut proje (`gnagqrqhzlqixafihiqo`) için tek dosya yeterli: **`sql/MEVCUT-SUPABASE-ICIN.sql`** ✅ çalıştırıldı.
-Sıfırdan kurulumda sıralı alternatif: 1) `supabase-kurulum.sql` → 2) `panel/1-supabase-panel-guncelleme.sql` → 3) `sql/uygulama-duzeltme.sql` → 4) `sql/audit-retention.sql` (pg_cron açıksa).
+## SQL Çalıştırma
+Tek dosya, sıfırdan kurulum: **`sql/SIFIRDAN-KURULUM.sql`** — Supabase Dashboard → SQL Editor'e yapıştır, Run.
+(A–I bölümleri: tablolar + panel + yetki fonksiyonları + RLS + indeksler + realtime + ayarlar + şifre sıfırlama yardım talepleri + sonuc doğrulama sorgusu. Idempotenttir, tekrar çalıştırma güvenlidir.)
+Eski parçalı dosyalar (`MEVCUT-SUPABASE-ICIN.sql`, `bolum-H-help-requests.sql`) referans olarak duruyor; yeni kurulumda gerekmez.

@@ -33,20 +33,19 @@ için build otomatik alır. (İsterseniz platform env'leri her zaman önceliklid
 ### 1.2 SQL Şemaları (SIRALI ÇALIŞTIRMA!)
 Dashboard → **SQL Editor**, aşağıdaki sırayla çalıştırın:
 
-> 💡 **Mevcut Supabase projen varsa ve sıfırdan kuracaksın:** aşağıdaki 3 dosyayı ayrı ayrı
-> uğraşmak yerine **tek dosyayı** çalıştır: `sql/MEVCUT-SUPABASE-ICIN.sql`
-> (A+B+C+D+E+F+G+H bölümleri = temel tablolar + panel + uygulama düzeltmeleri + realtime + indeksler + şifre sıfırlama yardım talepleri; idempotenttir).
-
-> ✅ **Bu proje durumu:** `MEVCUT-SUPABASE-ICIN.sql` A–G bölümleriyle **çalıştırıldı ve doğrulandı**
-> (canlı REST kontrolü: topics/words/homework/topic_access/notifications/app_settings hepsi erişilebilir).
-> Sonradan eklenen **BÖLÜM H** (`help_requests` tablosu — "Şifremi unuttum" yardım akışı) henüz veritabanında
-> YOK. Dashboard → SQL Editor'de sadece **`sql/bolum-H-help-requests.sql`** dosyasını çalıştırman yeterli.
+> 💡 **Tek dosyayla kurulum (ÖNERİLEN):** `sql/SIFIRDAN-KURULUM.sql`
+> Supabase Dashboard → SQL Editor → New query → dosyanın TAMAMINI yapıştır → Run.
+> A–I bölümleri = temel tablolar + panel tablolari + yetki fonksiyonlari + RLS + indeksler
+> + realtime yayini + başlangıç ayarları + şifre sıfırlama yardım talepleri (`help_requests`)
+> + en sonda kendi kendini doğrulayan SELECT özeti (tablolar=27, policy>=45, realtime=7 beklenir).
+> Idempotenttir: aynı dosyayı tekrar çalıştırmak güvenlidir; önceki hatalı yarımlardan kalan
+> policy/fonksiyon/tetikleyicileri otomatik temizler ("cannot change return type" ve
+> "COALESCE types text and integer" hatalarının kalıcı çözümü dosyanın C bölümündedir).
 
 | Sıra | Dosya | Amaç |
 |------|-------|------|
-| 1 | `supabase-kurulum.sql` | Temel tablolar, RLS policy'ler, trigger'lar |
-| 2 | `panel/1-supabase-panel-guncelleme.sql` | Panel özellikleri (ayarlar, mesajlaşma, denetim logu) |
-| 3 | `sql/uygulama-duzeltme.sql` | Uygulamanın okuduğu eksik kolonlar + `has_perm` sertleştirme + index'ler |
+| — | `sql/SIFIRDAN-KURULUM.sql` | **Tüm kurulum tek dosyada (yukarıdaki)** |
+| Ref | `supabase-kurulum.sql` / `panel/1-supabase-panel-guncelleme.sql` / `sql/uygulama-duzeltme.sql` | Eski parçalı sürümler — yeni kurulumda GEREKMEZ, referans için duruyor |
 
 > ⚠️ `sql/uygulama-duzeltme.sql` içindeki `cron.schedule` satırı **yalnızca pg_cron eklentisi açıksa** çalışır
 > (Dashboard → Database → Extensions → `pg_cron` ENABLE). Kapalıysa o satırı atlayın, bölüm 4'e bakın.
