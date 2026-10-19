@@ -29,6 +29,10 @@ Değerleri `app/.env.example` dosyasını kopyalayarak `app/.env` içine yazın
 ### 1.2 SQL Şemaları (SIRALI ÇALIŞTIRMA!)
 Dashboard → **SQL Editor**, aşağıdaki sırayla çalıştırın:
 
+> 💡 **Mevcut Supabase projen varsa ve sıfırdan kuracaksın:** aşağıdaki 3 dosyayı ayrı ayrı
+> uğraşmak yerine **tek dosyayı** çalıştır: `sql/MEVCUT-SUPABASE-ICIN.sql`
+> (A+B+C+D+E+F+G bölümleri = temel tablolar + panel + uygulama düzeltmeleri + realtime + indeksler; idempotenttir).
+
 | Sıra | Dosya | Amaç |
 |------|-------|------|
 | 1 | `supabase-kurulum.sql` | Temel tablolar, RLS policy'ler, trigger'lar |
