@@ -229,11 +229,60 @@ create table if not exists public.audit_log (
 create index if not exists idx_audit_at on public.audit_log(at desc);
 create index if not exists idx_audit_actor on public.audit_log(actor, at desc);
 
--- profiles.class_id FK'si classes varsa bagla (ilk calistirmada tablo sirasi icin)
+-- ---------- A2) LEGACY TIP ONARIMI ----------
+-- Eski/panel SQL surumlerinden kalmis bozuk kolon tiplerini uuid/text'e cevirir.
+-- Aksi halde FK ve COALESCE ("types text and integer cannot be matched") hatalari alinir.
+do $$ declare c record;
+begin
+  for c in
+    select table_name, column_name from information_schema.columns
+    where table_schema='public'
+      and (
+        (table_name='profiles' and column_name='class_id' and udt_name <> 'uuid') or
+        (table_name='classes'  and column_name='id'       and udt_name <> 'uuid') or
+        (table_name='messages' and column_name='audience' and data_type <> 'text') or
+        (table_name='messages' and column_name='class_id' and udt_name not in ('uuid')) or
+        (table_name='messages' and column_name='student_ids' and data_type <> 'ARRAY')
+      )
+  loop
+    begin
+      if c.table_name='profiles' and c.column_name='class_id' then
+        execute 'alter table public.profiles drop constraint if exists profiles_class_fk';
+        execute 'alter table public.profiles alter column class_id type uuid using case when class_id::text ~ ''^[0-9a-fA-F-]{36}$'' then class_id::text::uuid else null end';
+      elsif c.table_name='classes' and c.column_name='id' then
+        execute 'alter table public.classes alter column id type uuid using case when id::text ~ ''^[0-9a-fA-F-]{36}$'' then id::text::uuid else gen_random_uuid() end';
+      elsif c.table_name='messages' and c.column_name='audience' then
+        execute 'alter table public.messages alter column audience type text using audience::text';
+      elsif c.table_name='messages' and c.column_name='class_id' then
+        execute 'alter table public.messages drop column class_id';
+      elsif c.table_name='messages' and c.column_name='student_ids' then
+        execute 'alter table public.messages drop column student_ids';
+      end if;
+    exception when others then null; -- onarim zorunlu degil; FK adimi yine de guvenli atlar
+    end;
+  end loop;
+end $$;
+
+-- Eski surumlerden kalmis eksik/bozuk profile kolonlarini tamamla (fonksiyon/policy bunlara bagimli)
+alter table public.profiles add column if not exists active boolean not null default true;
+alter table public.profiles add column if not exists perms jsonb not null default '{}';
+alter table public.profiles add column if not exists full_name text not null default '';
+alter table public.profiles add column if not exists level int not null default 1;
+alter table public.profiles add column if not exists must_change_password boolean not null default false;
+alter table public.profiles alter column role set default 'student';
+update public.profiles set active = true where active is null;
+update public.profiles set perms = '{}'::jsonb where perms is null;
+
+-- profiles.class_id FK'si: yalnizca her iki kolon da uuid ise ekle (tip uyumsuzsa atla)
 do $$ begin
-  alter table public.profiles add constraint profiles_class_fk
-    foreign key (class_id) references public.classes(id) on delete set null;
-exception when duplicate_table then null; when duplicate_object then null; when foreign_key_violation then null; when undefined_table then null;
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='profiles' and column_name='class_id' and udt_name='uuid')
+     and exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='classes' and column_name='id' and udt_name='uuid') then
+    alter table public.profiles add constraint profiles_class_fk
+      foreign key (class_id) references public.classes(id) on delete set null;
+  end if;
+exception when duplicate_object then null; when foreign_key_violation then null; when undefined_table then null; when others then null;
 end $$;
 
 -- ---------- C) YETKI FONKSIYONLARI ----------
