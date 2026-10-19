@@ -22,6 +22,7 @@ import {
   genId,
 } from './utils/storage.ts';
 import { syncStudentProgress, syncFromSupabase, loadIdMap } from './utils/supabaseSync.ts';
+import { supabase } from './lib/supabase.ts';
 import {
   shuf,
   today,
@@ -197,7 +198,6 @@ export default function App() {
 
     const refreshContent = async () => {
       try {
-        const { loadDatabase, saveDatabase } = await import('./utils/storage.ts');
         const fresh = await syncFromSupabase(loadDatabase());
         if (cancelled) return;
         setDb((prev) => {
@@ -230,7 +230,6 @@ export default function App() {
     (async () => {
       if (cancelled) return;
       try {
-        const { supabase } = await import('./lib/supabase.ts');
         let debounce: ReturnType<typeof setTimeout> | null = null;
         const onChange = () => {
           if (debounce) clearTimeout(debounce);
@@ -480,7 +479,6 @@ export default function App() {
   const persistTopicAccess = (studentId: string, localTopicIds: string[]) => {
     (async () => {
       try {
-        const { supabase } = await import('./lib/supabase.ts');
         const { data: { user: authUser } } = await supabase.auth.getUser();
         if (!authUser) return;
         const map = loadIdMap();
@@ -567,8 +565,7 @@ export default function App() {
               // Şifre değişikliğini Supabase profiline de işle (tek yönlü lokal güncelleme veri kaybına yol açıyordu)
               (async () => {
                 try {
-                  const { supabase } = await import('./lib/supabase.ts');
-                  const { data: { user: authUser } } = await supabase.auth.getUser();
+                            const { data: { user: authUser } } = await supabase.auth.getUser();
                   if (authUser) {
                     await supabase
                       .from('profiles')
@@ -1037,8 +1034,7 @@ export default function App() {
                     onSetTheme={setTheme}
                     onLogout={async () => {
                       try {
-                        const { supabase } = await import('./lib/supabase.ts');
-                        await supabase.auth.signOut();
+                                        await supabase.auth.signOut();
                       } catch {}
                       setUser(null);
                       setScreenState({ screen: 'main' });
@@ -1315,8 +1311,7 @@ export default function App() {
                     onSetTheme={setTheme}
                     onLogout={async () => {
                       try {
-                        const { supabase } = await import('./lib/supabase.ts');
-                        await supabase.auth.signOut();
+                                        await supabase.auth.signOut();
                       } catch {}
                       setUser(null);
                       setScreenState({ screen: 'main' });
