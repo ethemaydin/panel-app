@@ -35,7 +35,12 @@ Dashboard → **SQL Editor**, aşağıdaki sırayla çalıştırın:
 
 > 💡 **Mevcut Supabase projen varsa ve sıfırdan kuracaksın:** aşağıdaki 3 dosyayı ayrı ayrı
 > uğraşmak yerine **tek dosyayı** çalıştır: `sql/MEVCUT-SUPABASE-ICIN.sql`
-> (A+B+C+D+E+F+G bölümleri = temel tablolar + panel + uygulama düzeltmeleri + realtime + indeksler; idempotenttir).
+> (A+B+C+D+E+F+G+H bölümleri = temel tablolar + panel + uygulama düzeltmeleri + realtime + indeksler + şifre sıfırlama yardım talepleri; idempotenttir).
+
+> ✅ **Bu proje durumu:** `MEVCUT-SUPABASE-ICIN.sql` A–G bölümleriyle **çalıştırıldı ve doğrulandı**
+> (canlı REST kontrolü: topics/words/homework/topic_access/notifications/app_settings hepsi erişilebilir).
+> Sonradan eklenen **BÖLÜM H** (`help_requests` tablosu — "Şifremi unuttum" yardım akışı) henüz veritabanında
+> YOK. Dashboard → SQL Editor'de sadece **`sql/bolum-H-help-requests.sql`** dosyasını çalıştırman yeterli.
 
 | Sıra | Dosya | Amaç |
 |------|-------|------|
