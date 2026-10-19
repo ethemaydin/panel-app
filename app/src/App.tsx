@@ -21,7 +21,7 @@ import {
   saveDatabase,
   genId,
 } from './utils/storage.ts';
-import { syncStudentProgress, syncFromSupabase } from './utils/supabaseSync.ts';
+import { syncStudentProgress, syncFromSupabase, loadIdMap } from './utils/supabaseSync.ts';
 import {
   shuf,
   today,
@@ -481,7 +481,6 @@ export default function App() {
     (async () => {
       try {
         const { supabase } = await import('./lib/supabase.ts');
-        const { loadIdMap } = await import('./utils/supabaseSync.ts');
         const { data: { user: authUser } } = await supabase.auth.getUser();
         if (!authUser) return;
         const map = loadIdMap();
