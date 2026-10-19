@@ -10,6 +10,7 @@
 <style>
 :root{--pri:#D80621;--bg:#F6F3F4;--card:#fff;--ink:#25151A;--mute:#7a6a6e;--line:#E8DFE1;--ok:#14935B;--bad:#C0392B}
 *{box-sizing:border-box}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
 button,input,select,textarea{font:inherit}
 [hidden]{display:none!important}
@@ -869,20 +870,30 @@ async function pTopics(){
     main.querySelectorAll('tr.sub[data-id]').forEach(tr=>tr.onclick=()=>editSub(subs.find(s=>s.id===tr.dataset.id),tr.dataset.top));
   };
   function editTopic(row){
-    const {m}=modal(row?'Konuyu düzenle':'Yeni konu',`<label class="fl">Başlık<input id="tt1" value="${esc(row?.title||'')}"></label><label class="fl">Sıra<input type="number" id="tt2" value="${row?.sort_order??0}"></label>`,async m=>{
+    const d=row?.data||{};
+    const {m}=modal(row?'Konuyu düzenle':'Yeni konu',`<label class="fl">Başlık<input id="tt1" value="${esc(row?.title||'')}"></label><label class="fl">Sıra<input type="number" id="tt2" value="${row?.sort_order??0}"></label><div class="row2"><label class="fl">İkon (emoji)<input id="tt3" value="${esc(d.icon||'📘')}" placeholder="📘"></label><label class="fl">Seviye<select id="tt4">${['A1','A2','B1','B2','C1'].map(l=>`<option value="${l}" ${d.level===l?'selected':''}>${l}</option>`).join('')}</select></label></div><label class="fl">Kısa açıklama<input id="tt5" value="${esc(d.desc||'')}" placeholder="Öğrencinin kartta göreceği metin"></label><label class="fl">Konu anlatımı<textarea id="tt6" rows="3" placeholder="Konu açılınca gösterilen giriş metni">${esc(d.exp||'')}</textarea></label><label class="fl">Kelime örnekleri<small>Her satır: ingilizce | türkçe (öğrenci kelime listesinde görünür)</small><textarea id="tt7" rows="4" style="font-family:monospace">${esc((Array.isArray(d.words)?d.words:[]).map(w=>Array.isArray(w)?w.join(' | '):'').join('\n'))}</textarea></label>`,async m=>{
       const title=m.querySelector('#tt1').value.trim(),sort_order=+m.querySelector('#tt2').value||0;
       if(!title)throw new Error('Başlık gerekli');
-      if(row)await ok(sb.from('topics').update({title,sort_order}).eq('id',row.id));
-      else await ok(sb.from('topics').insert({title,sort_order}));
+      const icon=m.querySelector('#tt3').value.trim()||'📘';
+      const level=m.querySelector('#tt4').value;
+      const desc=m.querySelector('#tt5').value.trim();
+      const exp=m.querySelector('#tt6').value.trim();
+      const words=m.querySelector('#tt7').value.split('\n').map(l=>l.split('|').map(s=>s.trim())).filter(p=>p.length===2&&p[0]&&p[1]);
+      const data={icon,level,desc,exp,words};
+      if(row)await ok(sb.from('topics').update({title,sort_order,data}).eq('id',row.id));
+      else await ok(sb.from('topics').insert({title,sort_order,data}));
       toast('Kaydedildi ✓');setTimeout(()=>go('topics'),0);return true},{extra:row?'<button class="btn ghost bad" id="td">Sil</button>':''});
-    const d=m.querySelector('#td');
-    if(d)d.onclick=()=>{if(!confirm('Konu ve tüm alt konuları silinsin mi?'))return;run(async()=>{await ok(sb.from('topics').delete().eq('id',row.id));m.remove();toast('Silindi');go('topics')})};
+    const d2=m.querySelector('#td');
+    if(d2)d2.onclick=()=>{if(!confirm('Konu ve tüm alt konuları silinsin mi?'))return;run(async()=>{await ok(sb.from('topics').delete().eq('id',row.id));m.remove();toast('Silindi');go('topics')})};
   }
   function editSub(row,topicId){
     const KINDS=[['lesson','Ders'],['video','Video'],['quiz','Test'],['reading','Okuma'],['exercise','Alıştırma']];
-    const {m}=modal(row?'Alt konuyu düzenle':'Yeni alt konu',`<label class="fl">Başlık<input id="st1" value="${esc(row?.title||'')}"></label><label class="fl">Tür<select id="st2">${KINDS.map(k=>`<option value="${k[0]}" ${row?.kind===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select></label><label class="fl">Sıra<input type="number" id="st3" value="${row?.sort_order??0}"></label><label class="fl">İçerik<small>JSON formatında (gelişmiş)</small><textarea id="st4" rows="6" style="font-family:monospace">${esc(row?.data?JSON.stringify(row.data,null,2):'{}')}</textarea></label>`,async m=>{
+    const sd=row?.data||{};
+    const {m}=modal(row?'Alt konuyu düzenle':'Yeni alt konu',`<label class="fl">Başlık<input id="st1" value="${esc(row?.title||'')}"></label><label class="fl">Tür<select id="st2">${KINDS.map(k=>`<option value="${k[0]}" ${row?.kind===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select></label><label class="fl">Sıra<input type="number" id="st3" value="${row?.sort_order??0}"></label><label class="fl">Anlatım metni<small>Uygulamada "Açıklama" olarak gösterilir</small><textarea id="st5" rows="5">${esc(sd.exp||sd.content||'')}</textarea></label><label class="fl">İçerik JSON<small>(gelişmiş — imgs gibi ek alanlar; anlatım buradaki "exp" ile de verilebilir)</small><textarea id="st4" rows="4" style="font-family:monospace">${esc(JSON.stringify(Object.fromEntries(Object.entries(sd).filter(([k])=>k!=='exp'&&k!=='content')),null,2))}</textarea></label>`,async m=>{
       const title=m.querySelector('#st1').value.trim(),kind=m.querySelector('#st2').value,sort_order=+m.querySelector('#st3').value||0;
-      let data;try{data=JSON.parse(m.querySelector('#st4').value||'{}')}catch(e){throw new Error('İçerik JSON olmalı')}
+      let extra;try{extra=JSON.parse(m.querySelector('#st4').value||'{}')}catch(e){throw new Error('İçerik JSON olmalı')}
+      const expText=m.querySelector('#st5').value.trim();
+      const data={...extra,exp:expText||(extra.content||'')};
       if(!title)throw new Error('Başlık gerekli');
       if(row)await ok(sb.from('subtopics').update({title,kind,sort_order,data}).eq('id',row.id));
       else await ok(sb.from('subtopics').insert({topic_id:topicId,title,kind,sort_order,data}));
@@ -985,16 +996,17 @@ async function pHomework(){
     main.querySelectorAll('tbody tr[data-id]').forEach(tr=>tr.onclick=()=>edit(H.find(h=>h.id===tr.dataset.id)));
   };
   function edit(row){
-    const {m}=modal(row?'Ödevi düzenle':'Yeni ödev',`<label class="fl">Başlık<input id="h1" value="${esc(row?.title||'')}"></label><label class="fl">Açıklama<textarea id="h2" rows="3">${esc(row?.body||'')}</textarea></label><label class="fl">Konu<select id="h3"><option value="">—</option>${T.map(t=>`<option value="${t.id}" ${row?.topic_id===t.id?'selected':''}>${esc(t.title)}</option>`).join('')}</select></label><label class="fl">Son tarih<input type="date" id="h4" value="${row?.due_date||''}"></label><h2>Kime ver?</h2>${assignHtml('as_hw',S,C,new Set())}`,async m=>{
+    const {m}=modal(row?'Ödevi düzenle':'Yeni ödev',`<label class="fl">Başlık<input id="h1" value="${esc(row?.title||'')}"></label><label class="fl">Tür<select id="h5"><option value="write" ${(row?.hw_type||'write')==='write'?'selected':''}>Yazılı ödev (metin teslimi)</option><option value="ex" ${row?.hw_type==='ex'?'selected':''}>Alıştırma / örnek çözümü</option><option value="test" ${row?.hw_type==='test'?'selected':''}>Test (konunun sorularıyla quiz)</option></select></label><label class="fl">Açıklama<textarea id="h2" rows="3">${esc(row?.body||'')}</textarea></label><label class="fl">Konu<select id="h3"><option value="">—</option>${T.map(t=>`<option value="${t.id}" ${row?.topic_id===t.id?'selected':''}>${esc(t.title)}</option>`).join('')}</select></label><div class="row2"><label class="fl">Son tarih<input type="date" id="h4" value="${row?.due_date||''}"></label><label class="fl">Geçme notu (%)<small>test ödevleri için</small><input type="number" id="h6" min="0" max="100" value="${row?.pass??60}"></label></div><h2>Kime ver?</h2>${assignHtml('as_hw',S,C,new Set())}`,async m=>{
       const title=m.querySelector('#h1').value.trim(),body=m.querySelector('#h2').value.trim(),topic_id=m.querySelector('#h3').value||null,due_date=m.querySelector('#h4').value||null;
+      const hw_type=m.querySelector('#h5').value,pass=Math.max(0,Math.min(100,+m.querySelector('#h6').value||60));
       if(!title)throw new Error('Başlık gerekli');
       const ids=getAssign($('#as_hw'));
       if(!ids.length)throw new Error('En az bir öğrenci seç');
       if(row){
-        await ok(sb.from('homework').update({title,body,topic_id,due_date}).eq('id',row.id));
+        await ok(sb.from('homework').update({title,body,topic_id,due_date,hw_type,pass}).eq('id',row.id));
         await saveJoin('homework_targets','homework_id',row.id,'student_id',ids);
       }else{
-        const {data:hw}=await ok(sb.from('homework').insert({title,body,topic_id,due_date}).select().single());
+        const {data:hw}=await ok(sb.from('homework').insert({title,body,topic_id,due_date,hw_type,pass}).select().single());
         await ok(sb.from('homework_targets').insert(ids.map(x=>({homework_id:hw.id,student_id:x}))));
       }
       toast('Kaydedildi ✓');setTimeout(()=>go('homework'),0);return true},{wide:true,extra:row?'<button class="btn ghost bad" id="hd">Sil</button>':''});

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Homework, Student, Topic } from '../types.ts';
-import { hwDone, hs } from '../utils/logic.ts';
+import { hwDone, hs, isHwVisible } from '../utils/logic.ts';
 
 interface HomeworkViewProps {
   student: Student;
@@ -18,9 +18,9 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
   onStartQuiz,
 }) => {
   // Filter homeworks assigned to this student
-  const mine = allHomeworks.filter(
-    (h) => !h.to || h.to.length === 0 || h.to.includes(student.id) || true
-  );
+  // NOT: eski kodda `|| true` vardı; bu filtre tamamen etkisiz bırakıyordu ve
+  // öğretmenin belirli öğrencilere/sınıflara atadığı ödevler herkese görünüyordu.
+  const mine = allHomeworks.filter((h) => isHwVisible(h, student));
 
   const pending = mine.filter((h) => !hwDone(h, student));
   const done = mine.filter((h) => hwDone(h, student));

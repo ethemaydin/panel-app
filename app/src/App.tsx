@@ -21,7 +21,7 @@ import {
   saveDatabase,
   genId,
 } from './utils/storage.ts';
-import { syncStudentProgress } from './utils/supabaseSync.ts';
+import { syncStudentProgress, syncFromSupabase } from './utils/supabaseSync.ts';
 import {
   shuf,
   today,
@@ -35,6 +35,7 @@ import { AndroidFrame } from './components/AndroidFrame.tsx';
 import { Navigation } from './components/Navigation.tsx';
 import { Toast, ToastData } from './components/Toast.tsx';
 import { CelebrationModal, CelebrationData } from './components/CelebrationModal.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 
 // Views
 import { LoginView } from './views/LoginView.tsx';
@@ -78,6 +79,25 @@ type ScreenState =
   | { screen: 'sed'; id: string; sid: string }
   | { screen: 'hed'; hwId: number }
   | { screen: 'led'; lid: number; oc?: number | null };
+
+/** Referans alınan içerik bulunamadığında gösterilen güvenli ara ekran. */
+const MissingScreen: React.FC<{ label: string; onBack: () => void }> = ({ label, onBack }) => (
+  <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+    <span className="text-5xl">🧭</span>
+    <h2 className="text-lg font-black text-[var(--ink)]">{label} bulunamadı</h2>
+    <p className="text-xs text-[var(--mute)] max-w-xs">
+      Bu içerik silinmiş olabilir ya da henüz cihazına ulaşmadı. Ana ekrandan tekrar deneyebilirsin.
+    </p>
+    <button
+      type="button"
+      onClick={onBack}
+      className="py-3 px-6 rounded-xl font-extrabold text-sm text-white cursor-pointer shadow-md"
+      style={{ backgroundColor: 'var(--pri)' }}
+    >
+      ‹ Ana ekran
+    </button>
+  </div>
+);
 
 export default function App() {
   const [db, setDb] = useState(loadDatabase);
@@ -168,6 +188,75 @@ export default function App() {
 
     return () => clearInterval(timer);
   }, []);
+
+  // Otomatik içerik yenileme: öğretmenin/panelin eklediği veriler oturum açıkken de görünsün
+  // (60 sn polling + Supabase realtime — login anındaki tek senkron sorunu burada çözüldü)
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    const refreshContent = async () => {
+      try {
+        const { loadDatabase, saveDatabase } = await import('./utils/storage.ts');
+        const fresh = await syncFromSupabase(loadDatabase());
+        if (cancelled) return;
+        setDb((prev) => {
+          // Öğrenci ilerlemesi lokalde tutulur; içerik tabloları sunucudan gelir
+          const merged = {
+            ...prev,
+            classes: fresh.classes,
+            words: fresh.words,
+            topics: fresh.topics,
+            homeworks: fresh.homeworks,
+            notifications: fresh.notifications,
+            students: prev.students.map((ps) => {
+              const fs = fresh.students.find((x) => x.id === ps.id);
+              return fs ? { ...ps, tp: fs.tp } : ps; // sadece erişim listesi senkronlanır
+            }),
+          };
+          saveDatabase(merged);
+          return merged;
+        });
+      } catch (err) {
+        console.warn('İçerik yenileme başarısız (çevrimdışı olabilir):', err);
+      }
+    };
+
+    const poll = setInterval(refreshContent, 60_000);
+    refreshContent();
+
+    // Realtime: panelde bir içerik değiştiği anda debounce ile çek
+    let rtCleanup: (() => void) | null = null;
+    (async () => {
+      if (cancelled) return;
+      try {
+        const { supabase } = await import('./lib/supabase.ts');
+        let debounce: ReturnType<typeof setTimeout> | null = null;
+        const onChange = () => {
+          if (debounce) clearTimeout(debounce);
+          debounce = setTimeout(refreshContent, 1500);
+        };
+        ['topics', 'subtopics', 'questions', 'words', 'homework', 'homework_targets', 'topic_access', 'notifications'].forEach((table) => {
+          supabase
+            .channel(`rt-${table}`)
+            .on('postgres_changes', { schema: 'public', event: '*', table }, onChange)
+            .subscribe();
+        });
+        rtCleanup = () => {
+          if (debounce) clearTimeout(debounce);
+          supabase.removeAllChannels();
+        };
+      } catch {
+        /* realtime yoksa polling zaten çalışıyor */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+      if (rtCleanup) rtCleanup();
+    };
+  }, [user]);
 
   // Handlers for Students Puzzle & Completion (öğrenci STABİL id'si ile çalışır)
   const addPuzzlePiece = (studentId: string) => {
@@ -378,6 +467,49 @@ export default function App() {
   const currentStudent =
     user && user.role === 's' && user.si ? db.students.find((s) => s.id === user.si) || null : null;
 
+  // ---- Güvenli ekran yardımcıları: find(...)! çökme noktaları kaldırıldı ----
+  const goMain = () => setScreenState({ screen: 'main' });
+  const missingRef = (label: string) => {
+    showToast('İçerik bulunamadı', `${label} artık mevcut değil ya da henüz senkronize edilmedi.`);
+    goMain();
+  };
+  const topicOf = (id: string) => db.topics.find((t) => t.id === id);
+  const homeworkOf = (id: number) => db.homeworks.find((h) => h.id === id);
+
+  // Konu erişim yetkisini Supabase topic_access tablosuna kalıcı yaz (best-effort)
+  const persistTopicAccess = (studentId: string, localTopicIds: string[]) => {
+    (async () => {
+      try {
+        const { supabase } = await import('./lib/supabase.ts');
+        const { loadIdMap } = await import('./utils/supabaseSync.ts');
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (!authUser) return;
+        const map = loadIdMap();
+        // local topic id -> supabase uuid
+        const sbTopicIds = localTopicIds
+          .map((lid) => Object.entries(map.topics).find(([_, l]) => l === lid)?.[0])
+          .filter(Boolean) as string[];
+        // Öğrencinin supabase profil id'sini e-posta üzerinden bul
+        const stu = db.students.find((x) => x.id === studentId);
+        if (!stu?.e) return;
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('email', stu.e.toLowerCase())
+          .maybeSingle();
+        if (!prof) return;
+        await supabase.from('topic_access').delete().eq('student_id', prof.id);
+        if (sbTopicIds.length) {
+          await supabase
+            .from('topic_access')
+            .insert(sbTopicIds.map((tid) => ({ student_id: prof.id, topic_id: tid })));
+        }
+      } catch (err) {
+        console.warn('topic_access senkronu başarısız (çevrimdışı olabilir):', err);
+      }
+    })();
+  };
+
   // Öğrenci ilerlemesini Supabase'e kaydet (debounce) — state updater içinde yan etki yerine temiz effect
   useEffect(() => {
     if (!currentStudent) return;
@@ -395,6 +527,7 @@ export default function App() {
   ]);
 
   return (
+    <ErrorBoundary>
     <AndroidFrame theme={theme}>
       <Toast toast={toast} onClose={() => setToast(null)} />
       <CelebrationModal
@@ -478,71 +611,93 @@ export default function App() {
             onBack={() => setScreenState({ screen: 'main' })}
           />
         ) : screenState.screen === 'cards' ? (
-          <FlashcardsView
-            deck={screenState.deck}
-            student={currentStudent!}
-            onExit={() => setScreenState({ screen: 'main' })}
-            onWordKnown={handleWordLearned}
-          />
-        ) : screenState.screen === 'topic' ? (
-          <TopicView
-            topic={db.topics.find((t) => t.id === screenState.id)!}
-            student={currentStudent!}
-            onBack={() => setScreenState({ screen: 'main' })}
-            onOpenSubTopic={(sid) =>
-              setScreenState({ screen: 'sub', id: screenState.id, sid })
-            }
-            onStartQuiz={(topicId) => {
-              const quiz = getQuizQuestions(topicId);
-              setScreenState({
-                screen: 'quiz',
-                key: topicId,
-                name: quiz.name,
-                qs: quiz.qs,
-              });
-            }}
-          />
-        ) : screenState.screen === 'sub' ? (
-          <SubTopicView
-            topic={db.topics.find((t) => t.id === screenState.id)!}
-            subTopic={
-              db.topics
-                .find((t) => t.id === screenState.id)!
-                .subs.find((s) => s.id === screenState.sid)!
-            }
-            student={currentStudent!}
-            onBack={() => setScreenState({ screen: 'topic', id: screenState.id })}
-            onMarkComplete={() => {
-              handleSubTopicDone(screenState.id, screenState.sid);
-              setScreenState({ screen: 'topic', id: screenState.id });
-            }}
-          />
-        ) : screenState.screen === 'write' ? (
-          <WritingHomeworkView
-            homework={db.homeworks.find((h) => h.id === screenState.hwId)!}
-            student={currentStudent!}
-            onBack={() => setScreenState({ screen: 'main' })}
-            onSubmit={(text) => {
-              const sid = user.si!;
-              setDb((prev) => {
-                const idx = prev.students.findIndex((x) => x.id === sid);
-                if (idx < 0) return prev;
-                const s = { ...prev.students[idx] };
-                s.h = {
-                  ...s.h,
-                  [screenState.hwId]: { score: null, text },
-                };
-                const students = [...prev.students];
-                students[idx] = s;
-                return { ...prev, students };
-              });
-              showToast('Ödev Teslim Edildi', 'Yazılı ödeviniz öğretmeninize iletildi.');
-              setScreenState({ screen: 'main' });
-            }}
-          />
-        ) : screenState.screen === 'ted' ? (
+          currentStudent && screenState.deck.length > 0 ? (
+            <FlashcardsView
+              deck={screenState.deck}
+              student={currentStudent}
+              onExit={() => setScreenState({ screen: 'main' })}
+              onWordKnown={handleWordLearned}
+            />
+          ) : (
+            <MissingScreen onBack={goMain} label="Kelime kartları" />
+          )
+        ) : screenState.screen === 'topic' ? (() => {
+          const t = topicOf(screenState.id);
+          return t && currentStudent ? (
+            <TopicView
+              topic={t}
+              student={currentStudent}
+              onBack={() => setScreenState({ screen: 'main' })}
+              onOpenSubTopic={(sid) =>
+                setScreenState({ screen: 'sub', id: screenState.id, sid })
+              }
+              onStartQuiz={(topicId) => {
+                const quiz = getQuizQuestions(topicId);
+                if (!quiz.qs.length) {
+                  showToast('Test hazır değil', 'Bu konuda henüz soru yok.');
+                  return;
+                }
+                setScreenState({
+                  screen: 'quiz',
+                  key: topicId,
+                  name: quiz.name,
+                  qs: quiz.qs,
+                });
+              }}
+            />
+          ) : (
+            <MissingScreen onBack={goMain} label="Konu" />
+          );
+        })() : screenState.screen === 'sub' ? (() => {
+            const t = topicOf(screenState.id);
+            const sub = t?.subs?.find((x) => x.id === screenState.sid);
+            return t && sub && currentStudent ? (
+              <SubTopicView
+                topic={t}
+                subTopic={sub}
+                student={currentStudent}
+                onBack={() => setScreenState({ screen: 'topic', id: screenState.id })}
+                onMarkComplete={() => {
+                  handleSubTopicDone(screenState.id, screenState.sid);
+                  setScreenState({ screen: 'topic', id: screenState.id });
+                }}
+              />
+            ) : (
+              <MissingScreen onBack={goMain} label="Alt konu" />
+            );
+          })() : screenState.screen === 'write' ? (() => {
+            const hw = homeworkOf(screenState.hwId);
+            return hw && currentStudent ? (
+              <WritingHomeworkView
+                homework={hw}
+                student={currentStudent}
+                onBack={() => setScreenState({ screen: 'main' })}
+                onSubmit={(text) => {
+                  const sid = user.si!;
+                  setDb((prev) => {
+                    const idx = prev.students.findIndex((x) => x.id === sid);
+                    if (idx < 0) return prev;
+                    const s = { ...prev.students[idx] };
+                    s.h = {
+                      ...s.h,
+                      [screenState.hwId]: { score: null, text },
+                    };
+                    const students = [...prev.students];
+                    students[idx] = s;
+                    return { ...prev, students };
+                  });
+                  showToast('Ödev Teslim Edildi', 'Yazılı ödeviniz öğretmeninize iletildi.');
+                  setScreenState({ screen: 'main' });
+                }}
+              />
+            ) : (
+              <MissingScreen onBack={goMain} label="Ödev" />
+            );
+          })() : screenState.screen === 'ted' ? (() => {
+            const t = topicOf(screenState.id);
+            return t ? (
           <TopicEditorView
-            topic={db.topics.find((t) => t.id === screenState.id)!}
+            topic={t}
             classes={db.classes}
             students={db.students}
             onBack={() => setScreenState({ screen: 'main' })}
@@ -592,16 +747,21 @@ export default function App() {
                 };
                 return { ...prev, students };
               });
+              // Yetkiyi Supabase topic_access tablosuna da yaz — sadece localStorage'a
+              // yazmak öğretmenin verdiği erişimi öğrencinin diğer cihazına/paneline taşımıyordu.
+              persistTopicAccess(studentId, newTopics);
             }}
           />
-        ) : screenState.screen === 'sed' ? (
+            ) : (
+              <MissingScreen onBack={goMain} label="Konu düzenleme" />
+            );
+          })() : screenState.screen === 'sed' ? (() => {
+            const t = topicOf(screenState.id);
+            const sub = t?.subs?.find((x) => x.id === screenState.sid);
+            return t && sub ? (
           <SubTopicEditorView
-            topic={db.topics.find((t) => t.id === screenState.id)!}
-            subTopic={
-              db.topics
-                .find((t) => t.id === screenState.id)!
-                .subs.find((s) => s.id === screenState.sid)!
-            }
+            topic={t}
+            subTopic={sub}
             onBack={() => setScreenState({ screen: 'ted', id: screenState.id })}
             onSave={(updated) => {
               setDb((prev) => ({
@@ -630,9 +790,14 @@ export default function App() {
               showToast('Silindi', 'Alt konu silindi.');
             }}
           />
-        ) : screenState.screen === 'hed' ? (
+            ) : (
+              <MissingScreen onBack={goMain} label="Alt konu düzenleme" />
+            );
+          })() : screenState.screen === 'hed' ? (() => {
+            const hw = homeworkOf(screenState.hwId);
+            return hw ? (
           <HomeworkEditorView
-            homework={db.homeworks.find((h) => h.id === screenState.hwId)!}
+            homework={hw}
             students={db.students}
             classes={db.classes}
             allTopics={db.topics}
@@ -653,9 +818,14 @@ export default function App() {
               showToast('Silindi', 'Ödev silindi.');
             }}
           />
-        ) : screenState.screen === 'led' ? (
+            ) : (
+              <MissingScreen onBack={goMain} label="Ödev düzenleme" />
+            );
+          })() : screenState.screen === 'led' ? (() => {
+            const lesson = db.lessons.find((l) => l.id === screenState.lid);
+            return lesson ? (
           <LessonEditorView
-            lesson={db.lessons.find((l) => l.id === screenState.lid)!}
+            lesson={lesson}
             occurrenceTime={screenState.oc}
             students={db.students}
             classes={db.classes}
@@ -676,9 +846,14 @@ export default function App() {
               showToast('Silindi', 'Ders silindi.');
             }}
           />
-        ) : screenState.screen === 'stu-detail' ? (
+            ) : (
+              <MissingScreen onBack={goMain} label="Ders düzenleme" />
+            );
+          })() : screenState.screen === 'stu-detail' ? (() => {
+            const stu = db.students.find((x) => x.id === screenState.studentId);
+            return stu ? (
           <StudentDetailView
-            student={db.students.find((x) => x.id === screenState.studentId)!}
+            student={stu}
             classes={db.classes}
             allTopics={db.topics}
             allWords={db.words}
@@ -695,7 +870,10 @@ export default function App() {
               showToast('Güncellendi', `${updated.n} bilgileri kaydedildi.`);
             }}
           />
-        ) : screenState.screen === 'cls' ? (
+            ) : (
+              <MissingScreen onBack={goMain} label="Öğrenci detayı" />
+            );
+          })() : screenState.screen === 'cls' ? (
           <ClassesEditorView
             classes={db.classes}
             students={db.students}
@@ -747,7 +925,16 @@ export default function App() {
                         ...shuf(levelWords.filter((w) => !currentStudent.kn.includes(w.id))),
                         ...shuf(levelWords.filter((w) => currentStudent.kn.includes(w.id))),
                       ];
-                      const deck = Array.from({ length: targetCount }, (_, i) => pool[i % pool.length]);
+                      // Havuz boşsa (seviyeye uygun kelime yok) deck'i undefined
+                      // elemanlarla doldurmak FlashcardsView'da çökmeye yol açıyordu.
+                      if (!pool.length) {
+                        showToast('Kelime yok', 'Seviyene uygun kelime henüz eklenmemiş.');
+                        return;
+                      }
+                      const deck = Array.from(
+                        { length: Math.min(targetCount, pool.length) },
+                        (_, i) => pool[i % pool.length],
+                      ).filter(Boolean);
                       setScreenState({ screen: 'cards', deck });
                     }}
                     onUpdateGoal={(newGoal) => {
@@ -1164,5 +1351,6 @@ export default function App() {
         />
       )}
     </AndroidFrame>
+    </ErrorBoundary>
   );
 }

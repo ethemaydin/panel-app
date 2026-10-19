@@ -1,0 +1,22 @@
+{
+  "appId": "com.englishbase.app",
+  "appName": "English Base",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "url": "https://english-base-panel.netlify.app",
+    "androidScheme": "https",
+    "allowNavigation": ["english-base-panel.netlify.app"]
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0f172a",
+      "showSpinner": true,
+      "spinnerColor": "#38bdf8"
+    },
+    "Keyboard": {
+      "style": "dark"
+    }
+  }
+}

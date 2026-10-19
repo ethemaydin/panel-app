@@ -49,7 +49,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   // Student's lessons
   const myLessons = allLessons
-    .filter((l) => l.stu.includes(student.id) || l.stu.length === 0 || true)
+    .filter((l) => l.stu.length === 0 || l.stu.includes(student.id))
     .flatMap((l) => occ(l).filter((x) => x.getTime() < Date.now() + 14 * 864e5).map((x) => ({ l, x })))
     .sort((a, b) => a.x.getTime() - b.x.getTime());
 

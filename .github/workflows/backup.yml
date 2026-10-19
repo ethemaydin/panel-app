@@ -1,0 +1,38 @@
+name: Backup (pg_dump)
+
+# Supabase yönetimli Postgres için günlük mantıksal yedek.
+# GitHub Secrets'a tanımla:
+#   SUPABASE_DB_HOST  (Settings → Database → Connection string, host kısmı)
+#   SUPABASE_DB_NAME  (genelde postgres)
+#   SUPABASE_DB_USER  (genelde postgres)
+#   SUPABASE_DB_PASS  (database şifresi — service role DEĞİL, DB şifresi)
+on:
+  schedule:
+    - cron: '30 3 * * *'   # her gün 03:30 UTC (06:30 TR)
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: pg_dump
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASS }}
+        run: |
+          pg_dump -h "$SUPABASE_DB_HOST" -U "$SUPABASE_DB_USER" -d "$SUPABASE_DB_NAME" \
+            --no-owner --format=custom -f backup.dump
+        continue-on-error: false
+
+      - name: Upload artifact (90 gün saklanır)
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_number }}
+          path: backup.dump
+          retention-days: 90

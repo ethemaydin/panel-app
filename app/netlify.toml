@@ -1,0 +1,26 @@
+# Netlify — Uygulama (Web Sürümü) Deploy Konfigürasyonu
+# Bu dosya app/ dizininden deploy için kullanılır:
+#   cd app && netlify deploy --prod  (veya UI'da base directory = "app")
+[build]
+  base = "."
+  publish = "dist"
+  command = "npm ci && npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Vite SPA — derin linkler index.html'e dönsün
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+
+# Not: Supabase anahtarları Site settings → Environment variables olarak tanımlanmalı:
+#   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY (ve opsiyonel VITE_SENTRY_DSN)

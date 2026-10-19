@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Question } from '../types.ts';
 import { ans, shuf } from '../utils/logic.ts';
 import { sp } from '../utils/speech.ts';
@@ -18,7 +18,7 @@ export const QuizView: React.FC<QuizViewProps> = ({
   onFinish,
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [score, setScore] = useState(0);
+  const scoreRef = useRef(0);
   const [isLocked, setIsLocked] = useState(false);
   const [selectedOpt, setSelectedOpt] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ isOk: boolean; text: string } | null>(null);
@@ -50,7 +50,10 @@ export const QuizView: React.FC<QuizViewProps> = ({
     if (isLocked) return;
     setIsLocked(true);
     if (isOk) {
-      setScore((s) => s + 1);
+      // Skoru ref ile takip ediyoruz: React state batch'i nedeniyle
+      // son soruda onFinish çağrıldığında state henüz güncellenmemiş
+      // olabilirdi (bug: son doğru cevap skora eklenmiyordu).
+      scoreRef.current += 1;
     }
     const correctAnswer = ans(currentQ);
     setFeedback({
@@ -61,7 +64,7 @@ export const QuizView: React.FC<QuizViewProps> = ({
 
   const handleNext = () => {
     if (currentIndex + 1 >= total) {
-      onFinish(score + (feedback?.isOk ? 0 : 0), total);
+      onFinish(scoreRef.current, total);
     } else {
       setCurrentIndex((i) => i + 1);
     }

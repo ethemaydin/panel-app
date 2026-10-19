@@ -31,14 +31,13 @@ export const miss = (s: Student): number => {
   return [...s.a].filter((c) => c === 'y').length;
 };
 
-export const hs = (h: Homework, s: Student) => {
-  // Saf mutasyon: ödev kaydını döndürür; çağıran taraf güncel state'i kendisi yayar.
-  if (!s.h) s.h = {};
-  if (!s.h[h.id]) {
-    s.h[h.id] = { score: null, text: '' };
-  }
-  return s.h[h.id];
+export const hwRecord = (h: Homework, s: Student): StudentProgress => {
+  // Tamamen saf: öğrenci nesnesini asla mutlemez (React state bozulmasını önler).
+  return s.h?.[h.id] || { score: null, text: '' };
 };
+
+/** @deprecated Eski çağrılarla uyumluluk — artık saf sürüm. */
+export const hs = hwRecord;
 
 /** Bir öğrencinin belirli bir ödev kaydını (varsa) güvenli biçimde günceller; yeni student nesnesi döner. */
 export const setHwRecord = (
@@ -79,10 +78,18 @@ export const fmtDue = (due: string): string => {
 };
 
 export const hwDone = (h: Homework, s: Student): boolean => {
-  const r = hs(h, s);
+  const r = hwRecord(h, s);
   if (h.type === 'write') return !!r.text;
+  // Test ödevlerinde soru yoksa "tamamlandı" sayılamaz ama görünür olmalı;
+  // ex tipinde konu soruları kullanılır.
   const passScore = h.type === 'ex' ? 60 : h.pass != null ? h.pass : 60;
   return r.score != null && r.score >= passScore;
+};
+
+/** Ödevin türüne göre öğrenciye görünürlük filtresi (|| true bug'ı kaldırıldı). */
+export const isHwVisible = (h: Homework, s: Student): boolean => {
+  if (!h.to || h.to.length === 0) return true; // hedefsiz ödev = herkese açık
+  return h.to.includes(s.id);
 };
 
 export const psize = (id: number): number => (id <= 10 ? 4 : 10);
@@ -104,11 +111,53 @@ export const pzInit = (s: Student): void => {
   s.cp = s.cp || [];
   s.td = s.td || {};
   s.sd = s.sd || {};
+  s.kn = s.kn || [];
+  s.h = s.h || {};
+  s.a = s.a ?? '';
+  s.tp = s.tp || undefined;
   s.nxt = s.nxt || s.cp.length;
   s.tc = s.tc || 0;
   s.wl = s.wl || 0;
   s.tpass = s.tpass || {};
 };
+
+/** Bir topic'i her alanı dolu olacak şekilde normalleştirir (eksik veri → çökme olmaz). */
+export const normTopic = (t: any): Topic => ({
+  ...(t as Topic),
+  ic: t?.ic || '📘',
+  t: t?.t || 'Konu',
+  d: t?.d || '',
+  exp: t?.exp || '',
+  lv: t?.lv || 'A1',
+  ex: Array.isArray(t?.ex) ? t.ex : [],
+  words: Array.isArray(t?.words) ? t.words : [],
+  q: Array.isArray(t?.q) ? t.q : [],
+  subs: Array.isArray(t?.subs) ? t.subs : [],
+});
+
+/** Öğrenciyi tüm zorunlu alanlarla normalize eder (Supabase/eski kayıt kaynaklı eksikleri kapatır). */
+export const normStudent = (s: any): Student => ({
+  ...(s as Student),
+  id: s?.id || genIdSafe(),
+  n: s?.n || 'Öğrenci',
+  a: typeof s?.a === 'string' ? s.a : '',
+  h: s?.h && typeof s.h === 'object' ? s.h : {},
+  kn: Array.isArray(s?.kn) ? s.kn : [],
+  cp: Array.isArray(s?.cp) ? s.cp : [],
+  td: s?.td && typeof s.td === 'object' ? s.td : {},
+  sd: s?.sd && typeof s.sd === 'object' ? s.sd : {},
+  tpass: s?.tpass && typeof s.tpass === 'object' ? s.tpass : {},
+  nxt: Number(s?.nxt) || 0,
+  tc: Number(s?.tc) || 0,
+  wl: Number(s?.wl) || 0,
+  goal: Number(s?.goal) || 10,
+  p: Number(s?.p) || 0,
+});
+
+const genIdSafe = (): string =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 export const wstat = (s: Student): { d: string; n: number } => {
   if (!s.day || s.day.d !== today()) {
