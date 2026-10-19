@@ -146,7 +146,7 @@ create table if not exists public.messages (
   title text not null, body text,
   audience text not null default 'all',   -- all|class|student
   class_id uuid, student_ids uuid[],
-  send_at timestamptz, sent boolean not null default false,
+  send_at timestamptz, sent boolean not null default false, sent_at timestamptz,
   created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
 );
@@ -215,6 +215,66 @@ exception when duplicate_table then null; when duplicate_object then null; when 
 end $$;
 
 -- ---------- C) YETKI FONKSIYONLARI ----------
+-- Eski surumlerde imzasi degismis olabilecek fonksiyonlar policy bagimliliklari
+-- kaldirilarak once temizlenir. (Aksi halde "cannot change return type of
+-- existing function" / "other objects depend on it" hatalari alinir.)
+do $$
+declare f text; pol record;
+begin
+  -- 1) Fonksiyonlara bagli RLS policy'lerini gecici kaldir
+  for pol in select schemaname, tablename, policyname from pg_policies
+             where schemaname='public' and (
+               coalesce(qual,'') like '%is_staff%' or coalesce(qual,'') like '%is_admin%'
+                or coalesce(qual,'') like '%has_perm%' or coalesce(qual,'') like '%my_class_ids%'
+                or coalesce(with_check,'') like '%is_staff%' or coalesce(with_check,'') like '%is_admin%'
+                or coalesce(with_check,'') like '%has_perm%' or coalesce(with_check,'') like '%my_class_ids%')
+  loop
+    begin execute format('drop policy if exists %I on %I.%I', pol.policyname, pol.schemaname, pol.tablename);
+    exception when others then null; end;
+  end loop;
+  -- 2) Tetikleyici bagimliliklarini kaldir (panel SQL'i tekrar calistirinca yenilerini kurar)
+  begin drop trigger if exists protect_profile on public.profiles; exception when others then null; end;
+  for pol in select tgname::text as n, tgrelid::regclass::text as tab from pg_trigger
+             where not tgisinternal and tgrelid::regclass::text like 'public.%'
+               and tgname like 'audit_%'
+  loop
+    begin execute format('drop trigger if exists %I on %s', pol.n, pol.tab);
+    exception when others then null; end;
+  end loop;
+  begin drop function if exists public.log_change(); exception when others then null; end;
+  begin drop function if exists public.protect_profile(); exception when others then null; end;
+  -- 3) Simdi guvenle dusur + yeniden olusturulabilir
+  foreach f in array array['public.is_staff()','public.is_admin()','public.has_perm(text)',
+                           'public.my_class_ids()','public.deliver_due_messages()']
+  loop
+    begin execute 'drop function if exists ' || f; exception when others then null; end;
+  end loop;
+end $$;
+
+-- Panel SQL'iyle ayni tipte mesaj tablolari (mevcut proje farkli tipteyse donustur).
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='messages' and column_name='audience'
+               and data_type <> 'text') then
+    alter table public.messages alter column audience type text using audience::text;
+  end if;
+exception when undefined_table or wrong_object_type then null; end $$;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='messages' and column_name='student_ids'
+               and data_type <> 'ARRAY') then
+    execute 'alter table public.messages drop column student_ids';
+  end if;
+exception when undefined_column or wrong_object_type then null; end $$;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='messages' and column_name='class_id'
+               and udt_name not in ('uuid')) then
+    execute 'alter table public.messages drop column class_id';
+  end if;
+exception when undefined_column or wrong_object_type then null; end $$;
+alter table public.messages add column if not exists sent_at timestamptz;
+
 create or replace function public.is_staff() returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (select 1 from public.profiles
@@ -406,6 +466,10 @@ create index if not exists ix_topics_level_sort on public.topics(level, sort_ord
 do $$
 declare t text;
 begin
+  -- Publication yoksa olustur (Supabase managed'de zaten vardir, local/self-host'ta olmayabilir)
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
   foreach t in array array['topics','subtopics','questions','homework','homework_targets',
                            'topic_access','notifications']
   loop
@@ -471,7 +535,7 @@ returns void language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_admin() then raise exception 'yetki yok'; end if;
   update help_requests set status='resolved', resolved_at=now(), resolved_by=auth.uid() where id=p_id;
-  insert into audit_log(action,table_name,record_id,detail)
+  insert into audit_log(action,table_name,row_id,detail)
     values ('FUNC:resolve_help','help_requests',p_id,jsonb_build_object('by',auth.uid()));
 end $$;
 revoke all on function public.resolve_help_request(uuid) from public;
