@@ -1,0 +1,6 @@
+{
+  "name": "English Base Android App",
+  "description": "English Base yerel çalışan Android mobil İngilizce öğrenme ve kurs yönetim uygulaması.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
