@@ -320,26 +320,45 @@ language sql stable security definer set search_path = public as $$
   from public.teacher_classes where teacher_id = auth.uid()
 $$;
 
--- Planli bildirim dagitimi
+-- Planli bildirim dagitimi.
+-- NOT: messages tablosunda artik student_ids/class_id KOLONLARI YOK; hedef kitle
+-- message_targets (ogrenci bazli) + audience degeriyle ('all'|'class:<uuid>') belirlenir.
+-- Kolonlar NITELIKLI referans edilir, boylece eski yarim kurulumlarda kolon varken de
+-- derleme hatasi olusmaz.
 create or replace function public.deliver_due_messages() returns int
 language plpgsql security definer set search_path = public as $$
-declare n int := 0; r record; s uuid;
+declare n int := 0; r record; sid uuid; ids uuid[]; aud text;
 begin
   for r in select id from public.messages
            where sent is not true and send_at <= now() loop
-    for s in select unnest(
-               coalesce(m.student_ids, '{}')
-               || case when m.audience='all' then (select array_agg(id) from public.profiles where role='student' and active)
-                       when m.audience='class' then (select array_agg(id) from public.profiles where role='student' and active and class_id=m.class_id)
-                       else '{}' end)
-             from public.messages m where m.id = r.id loop
+    select coalesce(public.messages.audience::text,'all') into aud
+      from public.messages where public.messages.id = r.id;
+
+    ids := '{}'::uuid[];
+    if aud = 'all' then
+      select array_agg(p.id)::uuid[] into ids from public.profiles p
+       where p.role = 'student' and p.active;
+    elsif aud like 'class:%' then
+      select array_agg(p.id)::uuid[] into ids from public.profiles p
+       where p.role = 'student' and p.active and p.class_id =
+             (split_part(aud, ':', 2))::uuid;
+    end if;
+    -- dogrudan hedeflenen ogrenciler (her audience'da eklenir)
+    ids := coalesce(ids,'{}') || coalesce((
+      select array_agg(t.student_id)::uuid[] from public.message_targets t
+       where t.message_id = r.id), '{}'::uuid[]);
+
+    foreach sid in array (
+      select array_agg(distinct x)::uuid[] from (
+        select unnest(ids) as x
+      ) u) loop
       insert into public.notifications (student_id, title, body, message_id)
-      select s, m.title, m.body, m.id from public.messages m where m.id = r.id
+      select sid, m.title, m.body, m.id from public.messages m where m.id = r.id
         and not exists (select 1 from public.notifications x
-          where x.message_id = r.id and x.student_id = s);
+          where x.message_id = r.id and x.student_id = sid);
       n := n + 1;
     end loop;
-    update public.messages set sent = true where id = r.id;
+    update public.messages set sent = true, sent_at = now() where id = r.id;
   end loop;
   return n;
 end $$;
