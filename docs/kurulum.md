@@ -45,10 +45,12 @@ Dashboard → **SQL Editor**, aşağıdaki sırayla çalıştırın:
 | Sıra | Dosya | Amaç |
 |------|-------|------|
 | — | `sql/SIFIRDAN-KURULUM.sql` | **Tüm kurulum tek dosyada (yukarıdaki)** |
-| Ref | `supabase-kurulum.sql` / `panel/1-supabase-panel-guncelleme.sql` / `sql/uygulama-duzeltme.sql` | Eski parçalı sürümler — yeni kurulumda GEREKMEZ, referans için duruyor |
+| Opsiyonel | `sql/audit-retention.sql` | audit_log 180 gün saklama cron'u (yalnızca pg_cron açıksa) |
 
-> ⚠️ `sql/uygulama-duzeltme.sql` içindeki `cron.schedule` satırı **yalnızca pg_cron eklentisi açıksa** çalışır
-> (Dashboard → Database → Extensions → `pg_cron` ENABLE). Kapalıysa o satırı atlayın, bölüm 4'e bakın.
+> ⚠️ Eski parçalı SQL dosyaları (`MEVCUT-SUPABASE-ICIN.sql`, `uygulama-duzeltme.sql`,
+> `bolum-H-help-requests.sql`, `supabase-kurulum.sql`) COALESCE/tip hatalarına yol açtığı için
+> depodan KALDIRILDI. Bunların tüm içeriği `SIFIRDAN-KURULUM.sql` içinde doğru sürüm olarak birleştirildi.
+> `panel/1-supabase-panel-guncelleme.sql` yalnızca referanstır; yeni kurulumda çalıştırılmaz.
 
 ### 1.3 Auth Ayarları
 Dashboard → **Authentication → Providers → Email**:

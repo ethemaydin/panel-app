@@ -1,7 +1,7 @@
-# ── Denetim Günlüğü Saklama Politikası (retention) ────────────────────
-# Supabase SQL Editor'de bir kez çalıştır. audit_log tablosunu 180 günden
-# eski kayıtlardan otomatik temizler. pg_cron kapalıysa bu komut hata verir;
-# o durumda GitHub Actions/panel üzerinden aylık temizlik yapın.
+-- ── Denetim Günlüğü Saklama Politikası (retention) ────────────────────
+-- Supabase SQL Editor'de bir kez çalıştır. audit_log tablosunu 180 günden
+-- eski kayıtlardan otomatik temizler. pg_cron kapalıysa bu komut hata verir;
+-- o durumda GitHub Actions/panel üzerinden aylık temizlik yapın.
 
 -- 1) pg_cron'un yüklü olduğunu doğrula (boş dönerse eklenti kapalıdır):
 --    select * from pg_extension where extname = 'pg_cron';
