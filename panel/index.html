@@ -72,6 +72,17 @@ tbody tr[data-id]{cursor:pointer}tbody tr[data-id]:hover{background:#fbf4f5}
   <p id="lerr" style="color:var(--bad)"></p>
   <button class="btn" id="lgo" style="width:100%">Giriş yap</button>
   <p style="text-align:center;margin:14px 0 0"><a id="lfg" style="cursor:pointer;color:var(--pri)">Şifremi unuttum</a></p>
+  <p style="text-align:center;margin:6px 0 0"><a id="frcbtn" style="cursor:pointer;color:var(--mute);font-size:13px">Hesabıma erişemiyorum → yöneticiden sıfırlama iste</a></p>
+</div>
+<div id="frc" hidden style="max-width:380px;margin:12vh auto;background:var(--card);padding:28px;border-radius:16px;box-shadow:0 6px 24px rgba(0,0,0,.08)">
+  <h1 style="color:var(--pri);margin:0 0 4px">Hesabına erişemiyor musun?</h1>
+  <p class="mute">Önce "Şifremi unuttum" bağlantısına tıklayıp e-postana gelen sıfırlama linkini dene.
+  Hâlâ giremiyorsan ya da e-posta adresini bilmiyorsan yöneticinden şifre sıfırlaması iste.</p>
+  <label class="fl">E-posta<input id="fem" type="email" autocomplete="username" placeholder="ad@okul.com"></label>
+  <p id="ferr" style="color:var(--bad)"></p>
+  <button class="btn" id="fsend" style="width:100%">Sıfırlama iste (yöneticiye düşer)</button>
+  <p class="mute" style="font-size:12px;margin-top:8px">Bu buton hesabını doğrudan açmaz; yöneticinin "Yardım talepleri" ekranına düşer. Yönetici onaylayınca yeni geçici şifren e-postana gönderilir.</p>
+  <button class="btn ghost" id="fback" style="width:100%;margin-top:8px;background:var(--line);color:var(--ink)">← Giriş ekranına dön</button>
 </div>
 <div id="rec" hidden style="max-width:380px;margin:12vh auto;background:var(--card);padding:28px;border-radius:16px;box-shadow:0 6px 24px rgba(0,0,0,.08)">
   <h1 style="color:var(--pri);margin:0 0 4px">Yeni şifre belirle</h1>
@@ -124,8 +135,8 @@ const ADMIN_PERMS_DEFAULT={
   'students.delete':true
 };
 
-const TRN={classes:'Sınıf',profiles:'Kullanıcı',topics:'Konu',subtopics:'Alt konu',questions:'Soru',words:'Kelime',homework:'Ödev',lessons:'Ders',attendance_sessions:'Yoklama',attendance_records:'Yoklama kaydı',messages:'Bildirim',teacher_classes:'Öğretmen sınıfı',app_settings:'Ayar',topic_access:'Konu erişimi',homework_targets:'Ödev hedefi',lesson_students:'Ders öğrencisi',message_targets:'Bildirim hedefi','auth.users':'Hesap'};
-const ACT={INSERT:'ekledi',UPDATE:'güncelledi',DELETE:'sildi','FUNC:create_student':'öğrenci hesabı açtı','FUNC:create_teacher':'öğretmen hesabı açtı','FUNC:set_password':'şifre değiştirdi','FUNC:set_active':'aktif/pasif yaptı','FUNC:update_email':'e-posta değiştirdi','FUNC:delete_user':'hesap sildi'};
+const TRN={classes:'Sınıf',profiles:'Kullanıcı',topics:'Konu',subtopics:'Alt konu',questions:'Soru',words:'Kelime',homework:'Ödev',lessons:'Ders',attendance_sessions:'Yoklama',attendance_records:'Yoklama kaydı',messages:'Bildirim',teacher_classes:'Öğretmen sınıfı',app_settings:'Ayar',topic_access:'Konu erişimi',homework_targets:'Ödev hedefi',lesson_students:'Ders öğrencisi',message_targets:'Bildirim hedefi','auth.users':'Hesap',help_requests:'Yardım talebi'};
+const ACT={INSERT:'ekledi',UPDATE:'güncelledi',DELETE:'sildi','FUNC:create_student':'öğrenci hesabı açtı','FUNC:create_teacher':'öğretmen hesabı açtı','FUNC:set_password':'şifre değiştirdi','FUNC:set_active':'aktif/pasif yaptı','FUNC:update_email':'e-posta değiştirdi','FUNC:resolve_help':'yardım talebini kapattı','FUNC:delete_user':'hesap sildi'};
 
 // ============ YARDIMCILAR ============
 const $=s=>document.querySelector(s);
@@ -702,6 +713,7 @@ const PAGES=[
   ['attend','Yoklama','✔️'],
   ['messages','Bildirimler','📨'],
   ['settings','Tasarım','🎨'],
+  ['help','Yardım talepleri','🆘'],
   ['audit','İşlem kaydı','📜']
 ];
 const allowed=x=>{
@@ -715,7 +727,7 @@ const allowed=x=>{
   if(id==='lessons')return can('lessons.manage');
   if(id==='attend')return can('attendance.take');
   if(id==='messages')return can('messages.send');
-  if(id==='settings')return me.role==='admin';
+  if(id==='settings'||id==='help')return me.role==='admin';
   if(id==='audit')return me.role==='admin';
   return true;
 };
@@ -725,7 +737,7 @@ function go(id){
   cur=id;
   location.hash=id;
   $('#nav').querySelectorAll('a').forEach(a=>{a.classList.toggle('on',a.dataset.id===id)});
-  const map={dash:pDash,students:pStudents,teachers:pTeachers,classes:pClasses,topics:pTopics,questions:pQuestions,words:pWords,homework:pHomework,lessons:pLessons,attend:pAttend,messages:pMessages,settings:pSettings,audit:pAudit};
+  const map={dash:pDash,students:pStudents,teachers:pTeachers,classes:pClasses,topics:pTopics,questions:pQuestions,words:pWords,homework:pHomework,lessons:pLessons,attend:pAttend,messages:pMessages,settings:pSettings,help:pHelp,audit:pAudit};
   $('#main').innerHTML='<p class="mute">Yükleniyor…</p>';
   run(()=>map[id]());
 }
@@ -1112,6 +1124,21 @@ async function pSettings(){
 }
 
 // ---- İşlem kaydı ----
+// ---- Yardim talepleri (sifirlama istekleri) ----
+async function pHelp(){
+  const main=$('#main');
+  const H=await ok(sb.from('help_requests').select('*').order('created_at',{ascending:false}).limit(200));
+  const open=H.filter(h=>h.status==='open');
+  const profs=await ok(sb.from('profiles').select('id,full_name,email,role'));
+  const findP=e=>profs.find(p=>(p.email||'').toLowerCase()===(e||'').toLowerCase());
+  main.innerHTML=`<div class="bar"><h1>Yardım talepleri</h1></div>
+  <p class="mute">Panele veya uygulamaya giremeyen kişilerin giriş ekranından bıraktığı sıfırlama istekleri. Karşıla: Öğretmenler sayfasından "Şifre sıfırla" ile geçici şifre üret, kişi ilk girişte değiştirmek zorunda kalır.</p>
+  <div class="tw"><table><thead><tr><th>Zaman</th><th>E-posta</th><th>Kayıtlı hesap</th><th>Durum</th><th></th></tr></thead><tbody>${
+    H.map(h=>{const p=findP(h.email);return `<tr><td>${fmtDT(h.created_at)}</td><td>${esc(h.email)}</td><td>${p?esc((p.full_name||'')+' ('+(p.role==='admin'?'yönetici':p.role==='teacher'?'öğretmen':'öğrenci')+')'):'<span class="mute">hesap yok</span>'}</td><td>${h.status==='open'?'<b style="color:var(--bad)">açık</b>':'<span class="mute">çözüldü</span>'}</td><td>${h.status==='open'?`<button class="btn sm" data-res="${h.id}">Çözüldü işaretle</button>`:''}</td></tr>`}).join('')||'<tr><td colspan="5" class="mute">Talep yok</td></tr>'}
+  </tbody></table></div>
+  ${open.length?`<p style="margin-top:10px"><b style="color:var(--bad)">${open.length} açık talep</b> var.</p>`:''}`;
+  main.querySelectorAll('[data-res]').forEach(b=>b.onclick=()=>run(async()=>{await ok(sb.rpc('resolve_help_request',{p_id:b.dataset.res}));toast('Talep çözüldü olarak işaretlendi');go('help')}));
+}
 async function pAudit(){
   const main=$('#main');
   const A=await ok(sb.from('audit_log').select('*').order('at',{ascending:false}).limit(400));
@@ -1133,12 +1160,40 @@ async function enter(){
   const {data:p}=await sb.from('profiles').select('*').eq('id',user.id).single();
   if(!p||!p.active||!['admin','teacher'].includes(p.role)){await sb.auth.signOut();showLogin('Bu panele sadece öğretmen ve yöneticiler girebilir.');return}
   me=p;$('#login').hidden=true;$('#app').hidden=false;
-  $('#nav').innerHTML=`<div class="brand">English Base</div>`+PAGES.filter(allowed).map(x=>`<a data-id="${x[0]}">${x[1]} ${x[2]}</a>`).join('')+`<div class="me">${esc(p.full_name||p.email)}<br>${p.role==='admin'?'Yönetici':'Öğretmen'}<br><a id="ltest" style="padding:6px 0;color:var(--pri)">🔌 Fonksiyon testi</a><br><a id="lout" style="padding:6px 0;color:var(--pri)">Çıkış yap</a></div>`;
+  $('#nav').innerHTML=`<div class="brand">English Base</div>`+PAGES.filter(allowed).map(x=>`<a data-id="${x[0]}">${x[1]} ${x[2]}</a>`).join('')+`<div class="me">${esc(p.full_name||p.email)}<br>${p.role==='admin'?'Yönetici':'Öğretmen'}<br><a id="navhelp" style="padding:6px 0;color:var(--bad);display:none"></a><a id="ltest" style="padding:6px 0;color:var(--pri)">🔌 Fonksiyon testi</a><br><a id="lout" style="padding:6px 0;color:var(--pri)">Çıkış yap</a></div>`;
   $('#nav').onclick=e=>{const a=e.target.closest('a[data-id]');if(a)go(a.dataset.id)};
+  const hb=$('#navhelp');if(hb)hb.onclick=()=>go('help');
   $('#ltest').onclick=()=>testFn();
   $('#lout').onclick=async()=>{await sb.auth.signOut();me=null;showLogin()};
+  if(me.role==='admin')startHelpBadge();
   go(location.hash.slice(1)||'dash');
 }
+// ---- Giris ekrani: yardim talebi (sifirlama admin onayina duser) ----
+let helpTimer=null;
+function startHelpBadge(){
+  if(helpTimer)clearInterval(helpTimer);
+  const check=async()=>{
+    const {data}=await sb.from('help_requests').select('id',{count:'exact'}).eq('status','open').limit(1);
+    const n=(data&&data.count)||0;
+    const el=document.getElementById('navhelp');
+    if(el){el.textContent=n?`🆘 Yardım (${n})`:'';el.style.display=n?'':'none'}
+  };
+  check();helpTimer=setInterval(check,60000);
+}
+$('#frcbtn').onclick=()=>{$('#login').hidden=true;$('#frc').hidden=false;const e=$('#lem').value.trim();if(e)$('#fem').value=e};
+$('#fback').onclick=()=>{$('#frc').hidden=true;showLogin()};
+$('#fsend').onclick=async()=>{
+  const em=$('#fem').value.trim().toLowerCase(),e=$('#ferr');e.textContent='';
+  if(!em.includes('@')){e.textContent='Geçerli bir e-posta yaz';return}
+  $('#fsend').disabled=true;
+  try{
+    await sb.rpc('request_password_reset',{p_email:em});
+    // Supabase sifirlama maili de gonder (SMTP ayarliysa kullanici linki de alir)
+    try{await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname})}catch(_){}
+    e.style.color='var(--ok)';e.textContent='Talebin yöneticiye iletildi. E-postanı da kontrol et.';
+  }catch(err){e.style.color='var(--bad)';e.textContent='Gönderilemedi: '+(err.message||'bilinmeyen hata')}
+  finally{$('#fsend').disabled=false}
+};
 $('#lgo').onclick=async()=>{
   $('#lerr').textContent='';
   const {error}=await sb.auth.signInWithPassword({email:$('#lem').value.trim(),password:$('#lpw').value});

@@ -4,6 +4,7 @@ import { LOGO, genId } from '../utils/storage.ts';
 import { signInWithEmail, supabase } from '../lib/supabase.ts';
 import { syncFromSupabase } from '../utils/supabaseSync.ts';
 import { loadDatabase, AppDatabase } from '../utils/storage.ts';
+import { ForgotPasswordView } from './ForgotPasswordView.tsx';
 
 interface LoginViewProps {
   students: Student[];
@@ -17,6 +18,17 @@ export const LoginView: React.FC<LoginViewProps> = ({ students, onLogin, onDbUpd
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  // URL'de type=recovery ile açıldıysa doğrudan şifre sıfırlama ekranı gösterilir
+  const [showForgot, setShowForgot] = useState(() => /type=recovery/.test(location.hash));
+
+  if (showForgot) {
+    return (
+      <ForgotPasswordView
+        onBack={() => setShowForgot(false)}
+        onDone={() => setShowForgot(false)}
+      />
+    );
+  }
 
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -238,6 +250,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ students, onLogin, onDbUpd
             }}
           >
             {loading ? 'Giriş yapılıyor…' : 'Giriş yap'}
+          </button>
+
+          <button
+            type="button"
+            id="fgt"
+            onClick={() => setShowForgot(true)}
+            disabled={loading}
+            className="w-full mt-2 py-2 px-4 rounded-xl font-bold text-xs text-[var(--pri)] underline-offset-2 hover:underline cursor-pointer bg-transparent"
+          >
+            Şifremi unuttum
           </button>
         </form>
 

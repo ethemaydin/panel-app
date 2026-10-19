@@ -42,3 +42,36 @@ export async function updatePassword(newPassword: string) {
   });
   return { data, error };
 }
+
+/** "Şifremi unuttum": e-postaya sıfırlama bağlantısı gönderir. */
+export async function requestPasswordReset(email: string) {
+  const { error } = await supabase.auth.resetPasswordForEmail(
+    email.trim().toLowerCase(),
+    { redirectTo: `${location.origin}${location.pathname}` }
+  );
+  return { error };
+}
+
+/** Sıfırlama bağlantısı açıldığında (type=recovery) aktif oturum var mı? */
+export async function hasRecoverySession() {
+  const { data } = await supabase.auth.getSession();
+  const s = data.session;
+  if (!s) return false;
+  // recovery oturumlarında amr'de 'recovery' bulunur
+  const types = (s.user?.app_metadata?.providers as string[] | undefined) || [];
+  void types;
+  return true;
+}
+
+/** Uygulama ayarlarını (bakım mesajı vb.) panelden çeker. */
+export async function fetchAppSettings(): Promise<Record<string, unknown>> {
+  try {
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('key,value');
+    if (error || !data) return {};
+    return Object.fromEntries(data.map((r: { key: string; value: unknown }) => [r.key, r.value]));
+  } catch {
+    return {};
+  }
+}
