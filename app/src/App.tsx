@@ -15,6 +15,10 @@ import {
   NotificationItem,
   BroadcastMessage,
   Question,
+  ProfileRole,
+  Perms,
+  ALL_PERMS,
+  userCan,
 } from './types.ts';
 import {
   loadDatabase,
@@ -150,6 +154,44 @@ export default function App() {
       localStorage.removeItem('eb_session_user');
     }
   }, [user]);
+
+  // ── Rol/perms tazeleme (panel SQL hiyerarşisi) ──
+  // Oturum localStorage'dan restore edildiğinde profileRole/perms eski olabilir;
+  // yönetici panelden öğretmenin yetkilerini değiştirdiğinde app'in de aynı
+  // görümü görmesi için profil her seferinde Supabase'den tazelenir.
+  // (SQL notu: profiles_read politikası rolü yalnız id=auth.uid() veya admin'de
+  //  gösterir — bu yüzden select 'or' ile değil, kullanıcının KENDİ satırıyla yapılır.)
+  useEffect(() => {
+    if (!user || user.role !== 't') return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data: me } = await supabase.auth.getUser();
+        if (!alive || !me.data.user) return;
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('role,perms,active,full_name,must_change_password')
+          .eq('id', me.data.user.id)
+          .maybeSingle();
+        if (!alive || !prof) return;
+        const profileRole: ProfileRole =
+          prof.role === 'admin' ? 'admin' : prof.role === 'teacher' ? 'teacher' : 'student';
+        const perms: Perms =
+          profileRole === 'admin'
+            ? (Object.fromEntries(ALL_PERMS.map((p) => [p, true])) as Perms)
+            : ((prof.perms && typeof prof.perms === 'object' ? prof.perms : {}) as Perms);
+        setUser((cur) =>
+          cur && cur.role === 't'
+            ? { ...cur, profileRole, perms, name: prof.full_name || cur.name }
+            : cur,
+        );
+      } catch {
+        /* çevrimdışı: mevcut oturumla devam */
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, user?.role]);
 
   // Apply theme
   useEffect(() => {
@@ -913,10 +955,19 @@ export default function App() {
             students={db.students}
             onBack={() => setScreenState({ screen: 'main' })}
             onSaveClassNames={(updated) => {
+              // Panel SQL: sınıf yönetimi 'classes.manage' yetkisi ister.
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf düzenlemek için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({ ...prev, classes: updated }));
               showToast('Kaydedildi', 'Sınıf adları güncellendi.');
             }}
             onAddClass={(name) => {
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf oluşturmak için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({
                 ...prev,
                 classes: [...prev.classes, { id: `c${Date.now()}`, n: name }],
@@ -924,6 +975,10 @@ export default function App() {
               showToast('Eklendi', `${name} sınıfı oluşturuldu.`);
             }}
             onDeleteClass={(cid) => {
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf silmek için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({
                 ...prev,
                 classes: prev.classes.filter((c) => c.id !== cid),
@@ -1103,6 +1158,7 @@ export default function App() {
                     onSelectStudent={(studentId) =>
                       setScreenState({ screen: 'stu-detail', studentId })
                     }
+                    user={user}
                     onCreateStudent={(newStudent) => {
                       const id = (newStudent as Student).id || genId();
                       setDb((prev) => ({
@@ -1132,10 +1188,19 @@ export default function App() {
                   <TeacherCalendarView
                     lessons={db.lessons}
                     notifications={db.notifications}
-                    onOpenLesson={(lid, oc) =>
-                      setScreenState({ screen: 'led', lid, oc })
-                    }
+                    onOpenLesson={(lid, oc) => {
+                      // Panel SQL: ders planlama 'lessons.manage' yetkisi ister.
+                      if (!userCan(user, 'lessons.manage')) {
+                        showToast('Yetki Gerekli', 'Ders düzenlemek için yöneticiden "Ders yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'led', lid, oc });
+                    }}
                     onNewLesson={() => {
+                      if (!userCan(user, 'lessons.manage')) {
+                        showToast('Yetki Gerekli', 'Ders oluşturmak için yöneticiden "Ders yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newLesson: LessonSchedule = {
                         id: Date.now(),
                         t: 'Yeni ders',
@@ -1159,8 +1224,19 @@ export default function App() {
                     words={db.words}
                     homeworks={db.homeworks}
                     students={db.students}
-                    onOpenTopicEditor={(id) => setScreenState({ screen: 'ted', id })}
+                    onOpenTopicEditor={(id) => {
+                      // Panel SQL: konu/soru yönetimi 'topics.manage' yetkisi ister.
+                      if (!userCan(user, 'topics.manage')) {
+                        showToast('Yetki Gerekli', 'Konu düzenlemek için yöneticiden "Konu yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'ted', id });
+                    }}
                     onNewTopic={() => {
+                      if (!userCan(user, 'topics.manage')) {
+                        showToast('Yetki Gerekli', 'Konu oluşturmak için yöneticiden "Konu yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newTopic: Topic = {
                         id: `x${Date.now()}`,
                         ic: '📘',
@@ -1180,6 +1256,11 @@ export default function App() {
                       setScreenState({ screen: 'ted', id: newTopic.id });
                     }}
                     onSaveWord={(word) => {
+                      // Panel SQL: kelime yönetimi 'words.manage' yetkisi ister.
+                      if (!userCan(user, 'words.manage')) {
+                        showToast('Yetki Gerekli', 'Kelime eklemek için yöneticiden "Kelime yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       setDb((prev) => {
                         if (word.id) {
                           return {
@@ -1200,14 +1281,29 @@ export default function App() {
                       showToast('Kelime Kaydedildi', `${word.e} listeye eklendi.`);
                     }}
                     onDeleteWord={(wid) => {
+                      if (!userCan(user, 'words.manage')) {
+                        showToast('Yetki Gerekli', 'Kelime silmek için yöneticiden "Kelime yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       setDb((prev) => ({
                         ...prev,
                         words: prev.words.filter((w) => w.id !== wid),
                       }));
                       showToast('Silindi', 'Kelime silindi.');
                     }}
-                    onOpenHomeworkEditor={(hwId) => setScreenState({ screen: 'hed', hwId })}
+                    onOpenHomeworkEditor={(hwId) => {
+                      // Panel SQL: ödev yönetimi 'homework.manage' yetkisi ister.
+                      if (!userCan(user, 'homework.manage')) {
+                        showToast('Yetki Gerekli', 'Ödev düzenlemek için yöneticiden "Ödev yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'hed', hwId });
+                    }}
                     onNewHomework={() => {
+                      if (!userCan(user, 'homework.manage')) {
+                        showToast('Yetki Gerekli', 'Ödev oluşturmak için yöneticiden "Ödev yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newHw: Homework = {
                         id: Date.now(),
                         t: 'Yeni ödev',
@@ -1234,6 +1330,11 @@ export default function App() {
                     sessions={db.sessions}
                     sessionClasses={db.sessionClasses}
                     onSaveAttendance={(classId, sessionKey, attendanceMap) => {
+                      // Panel SQL rol hiyerarşisi: yoklama yalnız 'attendance.take' yetkisiyle.
+                      if (!userCan(user, 'attendance.take')) {
+                        showToast('Yetki Gerekli', 'Bu işlem için yöneticiden "Yoklama alma" yetkisi gerekir.');
+                        return;
+                      }
                       const now = new Date();
                       const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
                       const todayLabel = `${now.getDate()} ${months[now.getMonth()]}`;
@@ -1306,6 +1407,11 @@ export default function App() {
                     classes={db.classes}
                     broadcasts={db.broadcasts}
                     onSendMessage={(t, m, to, when) => {
+                      // Panel SQL rol hiyerarşisi: duyuru yalnız 'messages.send' yetkisiyle.
+                      if (!userCan(user, 'messages.send')) {
+                        showToast('Yetki Gerekli', 'Bu işlem için yöneticiden "Mesaj gönderme" yetkisi gerekir.');
+                        return;
+                      }
                       const targetIds = to as string[];
                       const newBroadcast: BroadcastMessage = {
                         id: Date.now(),

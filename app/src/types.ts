@@ -1,8 +1,62 @@
 export type UserRole = 's' | 't';
 
+/**
+ * Panel SQL rol hiyerarşisi (profiles.role): 'student' | 'teacher' | 'admin'.
+ * App'te 't' tek değeri teacher VE admin'i kapsıyordu — bu yüzden yönetici ile
+ * öğretmen aynı rolde görünüyordu. Artık profileRole ayrımı var:
+ *   - admin   → her şeyi yapar, öğretmene yetki verir (panelde)
+ *   - teacher → yalnızca profiles.perms içinde işaretli yetkileri kullanır
+ *   - student → öğretmen/yönetici kontrolündedir
+ */
+export type ProfileRole = 'student' | 'teacher' | 'admin';
+
+/** Panel index.html PERMS dizisiyle BİREBİR aynı anahtarlar (SQL has_perm/teaches). */
+export type PermKey =
+  | 'students.view'
+  | 'students.create'
+  | 'students.edit'
+  | 'students.move'
+  | 'students.password'
+  | 'students.deactivate'
+  | 'students.delete'
+  | 'classes.manage'
+  | 'topics.manage'
+  | 'words.manage'
+  | 'homework.manage'
+  | 'lessons.manage'
+  | 'attendance.take'
+  | 'messages.send'
+  | 'stats.view'
+  | 'all_classes';
+
+export const ALL_PERMS: PermKey[] = [
+  'students.view',
+  'students.create',
+  'students.edit',
+  'students.move',
+  'students.password',
+  'students.deactivate',
+  'students.delete',
+  'classes.manage',
+  'topics.manage',
+  'words.manage',
+  'homework.manage',
+  'lessons.manage',
+  'attendance.take',
+  'messages.send',
+  'stats.view',
+  'all_classes',
+];
+
+export type Perms = Partial<Record<PermKey, boolean>>;
+
 export interface User {
   name: string;
   role: UserRole;
+  /** Supabase profiles.role ('student'|'teacher'|'admin'). Eksikse eski oturum: 't' → teacher varsayılır. */
+  profileRole?: ProfileRole;
+  /** Panelin öğretmene verdiği yetkiler (profiles.perms). Admin'de tümü açık kabul edilir. */
+  perms?: Perms;
   email: string;
   pw: string;
   phone: string;
@@ -12,6 +66,13 @@ export interface User {
     news: boolean;
   };
   si: string | null; // öğrenci kimliği (Student.id); öğretmen için null
+}
+
+/** Kullanıcının bir işlemi yapıp yapamayacağı — panel SQL has_perm() ile aynı mantık. */
+export function userCan(u: Pick<User, 'role' | 'profileRole' | 'perms'> | null, p: PermKey): boolean {
+  if (!u || u.role !== 't') return false;
+  if (u.profileRole === 'admin') return true;
+  return !!(u.perms && u.perms[p]);
 }
 
 export interface StudentAvatar {

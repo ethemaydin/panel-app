@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Student, ClassGroup, Topic } from '../types.ts';
+import { Student, ClassGroup, Topic, User, userCan } from '../types.ts';
 import { rate, miss, prog, stv } from '../utils/logic.ts';
 import { invokeAdminUsers } from '../lib/supabase.ts';
 import { loadIdMap, saveIdMap } from '../utils/supabaseSync.ts';
@@ -10,6 +10,8 @@ interface StudentsViewProps {
   classes: ClassGroup[];
   allTopics: Topic[];
   sessions: string[];
+  /** Oturumdaki öğretmen/yönetici — panel SQL rol hiyerarşisine göre yetki kapıları. */
+  user: User;
   onOpenClassEditor: () => void;
   onSelectStudent: (studentId: string) => void;
   onCreateStudent: (newStudent: Partial<Student>) => void;
@@ -20,10 +22,20 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   classes,
   allTopics,
   sessions,
+  user,
   onOpenClassEditor,
   onSelectStudent,
   onCreateStudent,
 }) => {
+  // Rol hiyerarşisi (panel SQL): admin her şeyi yapar; teacher yalnız profiles.perms
+  // içinde işaretli yetkileri kullanır. all_classes izni yoksa öğretmen yalnızca
+  // kendi sınıflarının öğrencilerini görür (teaches() mantığı).
+  const canCreate = userCan(user, 'students.create');
+  const seesAllClasses = user.profileRole === 'admin' || userCan(user, 'all_classes');
+  const myClassIds = new Set(classes.filter((c) => c.t === user.name).map((c) => c.id));
+  const visibleStudents = seesAllClasses
+    ? students
+    : students.filter((s) => myClassIds.has(s.c));
   const [classFilter, setClassFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [newStudentCreatedIndex, setNewStudentCreatedIndex] = useState<number | null>(null);
