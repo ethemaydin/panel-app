@@ -1,0 +1,6 @@
+psql:sql/SIFIRDAN-KURULUM.sql:44: NOTICE:  relation "profiles" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:51: NOTICE:  relation "classes" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:61: NOTICE:  relation "words" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:72: NOTICE:  relation "topics" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:80: ERROR:  foreign key constraint "subtopics_topic_id_fkey" cannot be implemented
+DETAIL:  Key columns "topic_id" and "id" are of incompatible types: uuid and integer.

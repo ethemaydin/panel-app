@@ -1,0 +1,1 @@
+psql:sql/SIFIRDAN-KURULUM.sql:64: ERROR:  relation "public.profiles" does not exist

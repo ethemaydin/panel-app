@@ -1,0 +1,242 @@
+psql:sql/SIFIRDAN-KURULUM.sql:61: NOTICE:  constraint "profiles_class_fk" of relation "profiles" does not exist, skipping
+DO
+ALTER TABLE
+ALTER TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:66: NOTICE:  column "full_name" of relation "profiles" already exists, skipping
+ALTER TABLE
+DO
+DO
+DO
+CREATE TABLE
+INSERT 0 5
+DO
+DO
+DO
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:179: NOTICE:  column "level" of relation "profiles" already exists, skipping
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+UPDATE 0
+UPDATE 0
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:209: NOTICE:  relation "profiles" already exists, skipping
+CREATE TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:216: NOTICE:  relation "classes" already exists, skipping
+CREATE TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:226: NOTICE:  relation "words" already exists, skipping
+CREATE TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:237: NOTICE:  relation "topics" already exists, skipping
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+DO
+DO
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  trigger "protect_profile" for relation "public.profiles" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.log_change() does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.protect_profile() does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.is_staff() does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.is_admin() does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.has_perm(text) does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.my_class_ids() does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:477: NOTICE:  function public.deliver_due_messages() does not exist, skipping
+DO
+DO
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:506: NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to constraint message_targets_message_id_fkey on table message_targets
+drop cascades to constraint notifications_message_id_fkey on table notifications
+DROP TABLE
+CREATE TABLE
+DO
+DO
+DO
+DO
+CREATE FUNCTION
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:618: NOTICE:  policy "self_or_staff" for relation "public.profiles" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:621: NOTICE:  policy "staff_write_profiles" for relation "public.profiles" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:627: NOTICE:  policy "read_words" for relation "public.words" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:634: NOTICE:  policy "staff_write_words" for relation "public.words" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:638: NOTICE:  policy "read_topics" for relation "public.topics" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:647: NOTICE:  policy "staff_write_topics" for relation "public.topics" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:651: NOTICE:  policy "read_subs_q" for relation "public.subtopics" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:653: NOTICE:  policy "staff_write_subs_q" for relation "public.subtopics" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:656: NOTICE:  policy "read_subs_q2" for relation "public.questions" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:658: NOTICE:  policy "staff_write_subs_q2" for relation "public.questions" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:662: NOTICE:  policy "read_hw" for relation "public.homework" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:666: NOTICE:  policy "staff_write_hw" for relation "public.homework" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:670: NOTICE:  policy "read_ht" for relation "public.homework_targets" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:673: NOTICE:  policy "staff_write_ht" for relation "public.homework_targets" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:677: NOTICE:  policy "own_ta" for relation "public.topic_access" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:679: NOTICE:  policy "staff_ta" for relation "public.topic_access" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_homework_submissions" for relation "public.homework_submissions" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_homework_submissions" for relation "public.homework_submissions" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_topic_complete" for relation "public.topic_complete" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_topic_complete" for relation "public.topic_complete" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_topic_pass" for relation "public.topic_pass" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_topic_pass" for relation "public.topic_pass" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_subtopic_done" for relation "public.subtopic_done" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_subtopic_done" for relation "public.subtopic_done" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_words_learned" for relation "public.words_learned" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_words_learned" for relation "public.words_learned" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_daily_words" for relation "public.daily_words" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_daily_words" for relation "public.daily_words" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "own_test_attempts" for relation "public.test_attempts" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:694: NOTICE:  policy "staff_read_test_attempts" for relation "public.test_attempts" does not exist, skipping
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:696: NOTICE:  policy "own_notif" for relation "public.notifications" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:699: NOTICE:  policy "staff_read_notif" for relation "public.notifications" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:702: NOTICE:  policy "staff_msg" for relation "public.messages" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:704: NOTICE:  policy "staff_msg_t" for relation "public.message_targets" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:707: NOTICE:  policy "read_classes" for relation "public.classes" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:709: NOTICE:  policy "staff_classes" for relation "public.classes" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:720: NOTICE:  policy "staff_lessons" for relation "public.lessons" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:720: NOTICE:  policy "staff_lesson_students" for relation "public.lesson_students" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:720: NOTICE:  policy "staff_attendance_sessions" for relation "public.attendance_sessions" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:720: NOTICE:  policy "staff_attendance_records" for relation "public.attendance_records" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:720: NOTICE:  policy "staff_teacher_classes" for relation "public.teacher_classes" does not exist, skipping
+DO
+psql:sql/SIFIRDAN-KURULUM.sql:722: NOTICE:  policy "settings_read" for relation "public.app_settings" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:724: NOTICE:  policy "settings_admin" for relation "public.app_settings" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:727: NOTICE:  policy "admin_audit" for relation "public.audit_log" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+ALTER TABLE
+CREATE INDEX
+psql:sql/SIFIRDAN-KURULUM.sql:756: WARNING:  wal_level is insufficient to publish logical changes
+HINT:  Set wal_level to "logical" before creating subscriptions.
+DO
+INSERT 0 4
+CREATE TABLE
+ALTER TABLE
+psql:sql/SIFIRDAN-KURULUM.sql:784: NOTICE:  policy "hr_insert" for relation "public.help_requests" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:786: NOTICE:  policy "hr_select_admin" for relation "public.help_requests" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+psql:sql/SIFIRDAN-KURULUM.sql:788: NOTICE:  policy "hr_update_admin" for relation "public.help_requests" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+CREATE FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+REVOKE
+GRANT
+psql:sql/SIFIRDAN-KURULUM.sql:824: NOTICE:  function public.admin_create_user(text,text,text,uuid) does not exist, skipping
+DROP FUNCTION
+CREATE FUNCTION
+REVOKE
+GRANT
+    kontrol     | deger 
+----------------+-------
+ tablolar       | 27
+ rls_acik       | 27
+ policy_sayisi  | 47
+ realtime_tablo | 7
+(4 rows)
+

@@ -15,6 +15,17 @@
 -- IDEMPOTENTTIR: tekrar calistirmak güvenlidir; mevcut tablolara
 -- dokunmaz (if not exists), policy/fonksiyonlari gunceller.
 --
+-- ON-KOSUL GUARDI: Supabase'de auth schema hazirdir. Yerel/baska bir
+-- Postgres'te test ederken "schema auth does not exist" hatasi alinmasin
+-- diye asagidaki guard bos auth.users'i olusturur (Supabase'de no-op).
+create schema if not exists auth;
+create table if not exists auth.users (
+  id uuid primary key default gen_random_uuid(),
+  email text,
+  raw_user_meta_data jsonb not null default '{}',
+  created_at timestamptz default now()
+);
+--
 -- ICERIK: A) tablolar  B) panel tablolari  C) yetki fonksiyonlari
 --         D) RLS policy'leri  E) indeksler  F) realtime yayini
 --         G) baslangic ayarlari  H) sifre sirlama yardim talepleri
@@ -29,6 +40,258 @@
 --  ya da sadece bunu calistirin — temel tabloları da olusturur.)
 -- =====================================================================
 
+-- ---------- A2) LEGACY profiles.class_id tip onarimi ----------
+-- DESTEKLENEN SENARYO: tablo/RLS şeması bu dosyanın tasarladığı yapıdadır
+-- (id/uuid PK'lar), yalnızca profiles.class_id ve level kolonları eski
+-- sürümlerden bozuk tipte kalmıştır. classes.id veya topics.id INTEGER olan
+-- çok eski şemalar otomatik migre edilMEZ — böyle bir DB'de kurulum gürültülü
+-- durur (sessiz yarım migration yerine patlak hata tercih edilir).
+-- Eski SQL surumlerinden kalmis integer/text tipli profiles.class_id kolonunu
+-- uuid'ye cevirir. messages tablosunun bozuk kolonlari C0 blogunda dinamik
+-- SQL ile temizlenir; burada HIC statik mesaj kolonu referansi yoktur
+-- (statik referanslar Supabase'de 42804 "COALESCE types text and integer"
+-- hatasinin kendisini uretiyordu).
+do $$ declare c record;
+begin
+  if to_regclass('public.profiles') is null then return; end if;
+  select column_name, udt_name into c
+    from information_schema.columns
+    where table_schema='public' and table_name='profiles' and column_name='class_id';
+  if c.column_name is not null and c.udt_name <> 'uuid' then
+    -- Eski integer/esnek tipli class_id -> uuid. Gecersiz degerler NULL'a duser.
+    -- Hata olursa SILENCE yutulmaz; kurulum gurultuyle durur (ON_ERROR_STOP ile uyumlu).
+    execute 'alter table public.profiles drop constraint if exists profiles_class_fk';
+    execute $x$alter table public.profiles alter column class_id type uuid
+      using case
+        when class_id::text ~* '^\s*[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\s*$'
+          then btrim(class_id::text)::uuid
+        when class_id::text ~ '^[0-9]+$'
+          then ('00000000-0000-0000-0000-' || lpad(class_id::text, 12, '0'))::uuid
+        else null end$x$;
+  end if;
+end $$;
+
+-- ---------- A2) LEGACY TIP ONARIMI (class_id/topic_id uuid -> integer) ------
+-- Eski SQL surumlerinden kalmis INTEGER tipli id kolonlari (classes.id,
+-- topics.id ve bunlara referans veren tum uuid kolonlari) otomatik olarak
+-- uuid'ye cevrilir.  Sozlu-migration: sayisal degerler deterministik UUID'ye
+-- donusturulur (1 -> 00000000-0000-0000-0000-000000000001), bozuk/uyumsuz
+-- referanslar NULL'a duser.  Hata olursa sessizce yutulmaz; kurulum gurutulu
+-- durur (ON_ERROR_STOP ile uyumlu).
+do $$ declare
+  r       record;
+  r2      record;
+  v_tab   text;
+  v_col   text;
+  v_pk    text;
+begin
+  -- 1) Ana tablolarin PK'si int ise once onu uuid yap (FK'leri gecici dusur)
+  foreach v_tab in array array['public.classes','public.topics','public.words'] loop
+    if to_regclass(v_tab) is null then continue; end if;
+    select a.attname into v_pk
+      from pg_constraint c join pg_attribute a
+        on a.attrelid=c.conrelid and a.attnum = any(c.conkey)
+      where c.contype='p' and c.conrelid = v_tab::regclass;
+    if v_pk is null then continue; end if;
+    if exists (select 1 from pg_attribute
+                where attrelid = v_tab::regclass and attname = v_pk
+                  and atttypid <> 'uuid'::regtype) then
+      -- bu tabloya bakan FK'leri kaldir
+      for r in select con.conname, cl.relname as child
+                 from pg_constraint con
+                 join pg_class cl on cl.oid = con.conrelid
+                 join pg_namespace n on n.oid = cl.relnamespace
+                where con.confrelid = v_tab::regclass and con.contype='f'
+              loop
+        execute format('alter table %I.%I drop constraint if exists %I',
+                       'public', r.child, r.conname);
+      end loop;
+      execute format('alter table %s alter column %I drop default', v_tab, v_pk);
+      execute format('alter table %s alter column %I type uuid using (''00000000-0000-0000-0000-'' || lpad(%I::text,12,''0''))::uuid',
+                     v_tab, v_pk, v_pk);
+      execute format('alter table %s alter column %I set default gen_random_uuid()', v_tab, v_pk);
+    end if;
+  end loop;
+
+  -- 2) classes/topics'e referans veren TUM uuid kolonlarini int->uuid cevir
+  for r in
+      select n.nspname as schem, cl.relname as tab, a.attname as col
+        from pg_constraint con
+        join pg_class cl on cl.oid = con.conrelid
+        join pg_namespace n on n.oid = cl.relnamespace
+        join pg_attribute a on a.attrelid = con.conrelid and a.attnum = (con.conkey)[1]
+       where con.contype='f'
+         and con.confrelid in ('public.classes'::regclass,'public.topics'::regclass,'public.words'::regclass)
+         and a.atttypid = 'uuid'::regtype
+         and exists (select 1 from pg_attribute x
+                      where x.attrelid = con.confrelid and x.attnum = (con.confkey)[1]
+                        and x.atttypid <> 'uuid'::regtype)
+       order by cl.relname, a.attname
+  loop
+    v_tab := format('%I.%I', r.schem, r.tab);
+    v_col := r.col;
+    -- bu kolonu referans alan FK'leri gecici dusur
+    for r2 in select (rec).conname, (rec).child from (
+                select row(con2.conname, cl2.relname) as rec
+                  from pg_constraint con2
+                  join pg_class cl2 on cl2.oid = con2.conrelid
+                 where con2.confrelid = v_tab::regclass and con2.contype='f'
+                   and (con2.conkey)[1] = (select attnum from pg_attribute
+                                            where attrelid=v_tab::regclass and attname=v_col)
+              ) sub
+              loop
+      execute format('alter table public.%I drop constraint if exists %I', r2.child, r2.conname);
+    end loop;
+    execute format('alter table %s alter column %I type uuid using case
+                      when %I::text ~ ''^[0-9]+$'' then (''00000000-0000-0000-0000-'' || lpad(%I::text,12,''0''))::uuid
+                      else null end',
+                   v_tab, v_col, v_col, v_col);
+  end loop;
+end $$;
+-- Eski surumlerden kalmis eksik/bozuk profile kolonlarini tamamla (fonksiyon/policy bunlara bagimli)
+-- DIKKAT: Bu statik ALTER'lar profiles tablosundan SONRA calismalidir. Fresh DB'de
+-- tablo henuz yokken "relation public.profiles does not exist" hatasi verilmesin
+-- diye to_regclass kontrolu ile sarmalanmistir (tablo yoksa A blogu zaten yaratacak).
+do $$ begin
+  if to_regclass('public.profiles') is null then return; end if;
+  alter table public.profiles add column if not exists active boolean not null default true;
+  alter table public.profiles add column if not exists perms jsonb not null default '{}';
+  alter table public.profiles add column if not exists full_name text not null default '';
+end $$;
+
+-- A3) LEVEL TIP MIGRASYONU (int -> CEFR text: A1..C1)  — POLICY'LERDEN ONCE!
+-- Panel, Edge Function ve uygulama seviyeyi 'A1'/'B2' gibi METIN kullanir; eski
+-- SQL semasi int(1..5) idi. Bu blok mevcut DB'de tip uyumsuzlugunu otomatik
+-- cozer: 1->A1, 2->A2, 3->B1, 4->B2, 5->C1. Zaten text ise hicbir sey yapmaz.
+do $$ begin
+  if to_regclass('public.profiles') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='profiles'
+         and column_name='level' and udt_name <> 'text') then
+    -- ONCE tipi cevir (int -> text); sonra CEFR degerlerini ata.
+    -- Sira ters olursa "column is of type integer but expression is
+    -- of type text" hatasi uretilir.
+    alter table public.profiles alter column level type text using level::text;
+    update public.profiles set level = case level
+      when '1' then 'A1' when '2' then 'A2' when '3' then 'B1'
+      when '4' then 'B2' when '5' then 'C1' else 'A1' end;
+    alter table public.profiles alter column level set default 'A1';
+  end if;
+end $$;
+-- NOT: bu DO blogu bilincli olarak "exception when others" ile sarmalanmaz;
+-- hata sessizce yutulursa tip migrasyonu yarida kalir ve asagidaki CEFR
+-- temizlik/update bloklari int kolon uzerinde calisarak DB'yi bozabilir.
+
+do $$ begin
+  if to_regclass('public.words') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='words'
+         and column_name='level' and udt_name <> 'text') then
+    alter table public.words alter column level type text using level::text;
+    update public.words set level = case level
+      when '1' then 'A1' when '2' then 'A2' when '3' then 'B1'
+      when '4' then 'B2' when '5' then 'C1' else 'A1' end;
+    alter table public.words alter column level set default 'A1';
+  end if;
+end $$;
+
+do $$ begin
+  if to_regclass('public.topics') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='topics'
+         and column_name='level' and udt_name <> 'text') then
+    alter table public.topics alter column level type text using level::text;
+    update public.topics set level = case level
+      when '1' then 'A1' when '2' then 'A2' when '3' then 'B1'
+      when '4' then 'B2' when '5' then 'C1' else 'A1' end;
+    alter table public.topics alter column level set default 'A1';
+  end if;
+end $$;
+
+-- Seviye sozlugu: siralamayi veritabani tarafinda tek dogru kaynaga bagla
+create table if not exists public.level_scale (
+  level text primary key check (level in ('A1','A2','B1','B2','C1')),
+  rank int not null unique
+);
+insert into public.level_scale(level, rank) values
+  ('A1',1), ('A2',2), ('B1',3), ('B2',4), ('C1',5)
+on conflict (level) do update set rank = excluded.rank;
+
+-- CEFR sinir kontrolu + temizlik (tip migrasyonu yukarida tamamlandi)
+do $$ begin
+  if to_regclass('public.profiles') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='profiles'
+         and column_name='level' and udt_name = 'text') then
+    update public.profiles set level = 'A1'
+      where level is null or level not in ('A1','A2','B1','B2','C1');
+    alter table public.profiles alter column level set not null;
+    alter table public.profiles alter column level set default 'A1';
+  end if;
+end $$;
+do $$ begin
+  if to_regclass('public.words') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='words'
+         and column_name='level' and udt_name = 'text') then
+    update public.words set level = 'A1'
+      where level is null or level not in ('A1','A2','B1','B2','C1');
+    alter table public.words alter column level set not null;
+    alter table public.words alter column level set default 'A1';
+  end if;
+end $$;
+do $$ begin
+  if to_regclass('public.topics') is not null and exists (
+       select 1 from information_schema.columns
+       where table_schema='public' and table_name='topics'
+         and column_name='level' and udt_name = 'text') then
+    update public.topics set level = 'A1'
+      where level is null or level not in ('A1','A2','B1','B2','C1');
+    alter table public.topics alter column level set not null;
+    alter table public.topics alter column level set default 'A1';
+  end if;
+end $$;
+
+do $$ begin
+  if to_regclass('public.profiles') is not null and not exists (
+       select 1 from pg_constraint where conname='profiles_level_check') then
+    alter table public.profiles add constraint profiles_level_check
+      check (level in ('A1','A2','B1','B2','C1'));
+  end if;
+  if to_regclass('public.words') is not null and not exists (
+       select 1 from pg_constraint where conname='words_level_check') then
+    alter table public.words add constraint words_level_check
+      check (level in ('A1','A2','B1','B2','C1'));
+  end if;
+  if to_regclass('public.topics') is not null and not exists (
+       select 1 from pg_constraint where conname='topics_level_check') then
+    alter table public.topics add constraint topics_level_check
+      check (level in ('A1','A2','B1','B2','C1'));
+  end if;
+end $$;
+
+-- Fresh DB'de profiles henuz yok; tablo var ise eksikleri tamamla (idempotent).
+do $$ begin
+  if to_regclass('public.profiles') is null then return; end if;
+  alter table public.profiles add column if not exists level text not null default 'A1';
+  alter table public.profiles add column if not exists must_change_password boolean not null default false;
+  alter table public.profiles alter column role set default 'student';
+  update public.profiles set active = true where active is null;
+  update public.profiles set perms = '{}'::jsonb where perms is null;
+end $$;
+
+-- profiles.class_id FK'si: yalnizca her iki kolon da uuid ise ekle (tip uyumsuzsa atla)
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='profiles' and column_name='class_id' and udt_name='uuid')
+     and exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='classes' and column_name='id' and udt_name='uuid') then
+    alter table public.profiles add constraint profiles_class_fk
+      foreign key (class_id) references public.classes(id) on delete set null;
+  end if;
+exception when duplicate_object then null; when foreign_key_violation then null; when undefined_table then null; when others then null;
+end $$;
+
 -- ---------- A) TEMEL TABLOLAR ----------
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -36,7 +299,7 @@ create table if not exists public.profiles (
   full_name text not null default '',
   role text not null default 'student' check (role in ('admin','teacher','student')),
   class_id uuid,
-  level int not null default 1,
+  level text not null default 'A1' check (level in ('A1','A2','B1','B2','C1')),
   active boolean not null default true,
   must_change_password boolean not null default false,
   perms jsonb not null default '{}',
@@ -54,7 +317,7 @@ create table if not exists public.words (
   id uuid primary key default gen_random_uuid(),
   en text not null,
   tr text not null,
-  level int not null default 1,
+  level text not null default 'A1' check (level in ('A1','A2','B1','B2','C1')),
   example_en text, example_tr text, image_url text,
   created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
@@ -64,7 +327,7 @@ create table if not exists public.topics (
   id uuid primary key default gen_random_uuid(),
   title text not null,
   description text,
-  level int not null default 1,
+  level text not null default 'A1' check (level in ('A1','A2','B1','B2','C1')),
   sort_order int not null default 0,
   data jsonb not null default '{}',   -- icon/desc/exp/level metadata
   created_by uuid references public.profiles(id),
@@ -229,50 +492,6 @@ create table if not exists public.audit_log (
 create index if not exists idx_audit_at on public.audit_log(at desc);
 create index if not exists idx_audit_actor on public.audit_log(actor, at desc);
 
--- ---------- A2) LEGACY TIP ONARIMI (yalniz profiles.class_id) ----------
--- Eski SQL surumlerinden kalmis integer/text tipli profiles.class_id kolonunu
--- uuid'ye cevirir. messages tablosunun bozuk kolonlari C0 blogunda dinamik
--- SQL ile temizlenir; burada HIC statik mesaj kolonu referansi yoktur
--- (statik referanslar Supabase'de 42804 "COALESCE types text and integer"
--- hatasinin kendisini uretiyordu).
-do $$ declare c record;
-begin
-  if to_regclass('public.profiles') is null then return; end if;
-  select column_name, udt_name into c
-    from information_schema.columns
-    where table_schema='public' and table_name='profiles' and column_name='class_id';
-  if c.column_name is not null and c.udt_name <> 'uuid' then
-    begin
-      execute 'alter table public.profiles drop constraint if exists profiles_class_fk';
-      execute $x$alter table public.profiles alter column class_id type uuid
-        using case when class_id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-                   then class_id::text::uuid else null end$x$;
-    exception when others then null; end;
-  end if;
-end $$;
-
--- Eski surumlerden kalmis eksik/bozuk profile kolonlarini tamamla (fonksiyon/policy bunlara bagimli)
-alter table public.profiles add column if not exists active boolean not null default true;
-alter table public.profiles add column if not exists perms jsonb not null default '{}';
-alter table public.profiles add column if not exists full_name text not null default '';
-alter table public.profiles add column if not exists level int not null default 1;
-alter table public.profiles add column if not exists must_change_password boolean not null default false;
-alter table public.profiles alter column role set default 'student';
-update public.profiles set active = true where active is null;
-update public.profiles set perms = '{}'::jsonb where perms is null;
-
--- profiles.class_id FK'si: yalnizca her iki kolon da uuid ise ekle (tip uyumsuzsa atla)
-do $$ begin
-  if exists (select 1 from information_schema.columns
-             where table_schema='public' and table_name='profiles' and column_name='class_id' and udt_name='uuid')
-     and exists (select 1 from information_schema.columns
-             where table_schema='public' and table_name='classes' and column_name='id' and udt_name='uuid') then
-    alter table public.profiles add constraint profiles_class_fk
-      foreign key (class_id) references public.classes(id) on delete set null;
-  end if;
-exception when duplicate_object then null; when foreign_key_violation then null; when undefined_table then null; when others then null;
-end $$;
-
 -- auth.uid() stub: YALNIZCA test/or tam kurulum icin guvenlik agi. Supabase'de bu
 -- fonksiyon zaten mevcuttur; buradaki orijinal tanimi EZMEZ cunku ayni imzali
 -- mevcut fonksiyona dokunulmaz (asagidaki DO blogu yalnizca eksikse olusturur).
@@ -297,7 +516,7 @@ begin
   for f in select p.oid::regprocedure::text as sig
            from pg_proc p join pg_namespace n on n.oid=p.pronamespace
            where n.nspname='public' and p.proname='deliver_due_messages' loop
-    begin execute 'drop function if exists ' || f.sig; exception when others then null; end;
+    execute 'drop function if exists ' || f.sig;
   end loop;
 end $$;
 
@@ -316,9 +535,7 @@ begin
         (column_name = 'student_ids' and data_type <> 'ARRAY')
       )
   loop
-    begin
-      execute format('alter table public.messages drop column if exists %I', c.column_name);
-    exception when others then null; end;
+    execute format('alter table public.messages drop column if exists %I', c.column_name);
   end loop;
 end $$;
 
@@ -337,25 +554,23 @@ begin
                 or coalesce(with_check,'') like '%is_staff%' or coalesce(with_check,'') like '%is_admin%'
                 or coalesce(with_check,'') like '%has_perm%' or coalesce(with_check,'') like '%my_class_ids%')
   loop
-    begin execute format('drop policy if exists %I on %I.%I', pol.policyname, pol.schemaname, pol.tablename);
-    exception when others then null; end;
+    execute format('drop policy if exists %I on %I.%I', pol.policyname, pol.schemaname, pol.tablename);
   end loop;
   -- 2) Tetikleyici bagimliliklarini kaldir (panel SQL'i tekrar calistirinca yenilerini kurar)
-  begin drop trigger if exists protect_profile on public.profiles; exception when others then null; end;
+  drop trigger if exists protect_profile on public.profiles;
   for pol in select tgname::text as n, tgrelid::regclass::text as tab from pg_trigger
              where not tgisinternal and tgrelid::regclass::text like 'public.%'
                and tgname like 'audit_%'
   loop
-    begin execute format('drop trigger if exists %I on %s', pol.n, pol.tab);
-    exception when others then null; end;
+    execute format('drop trigger if exists %I on %s', pol.n, pol.tab);
   end loop;
-  begin drop function if exists public.log_change(); exception when others then null; end;
-  begin drop function if exists public.protect_profile(); exception when others then null; end;
+  drop function if exists public.log_change();
+  drop function if exists public.protect_profile();
   -- 3) Simdi guvenle dusur + yeniden olusturulabilir
   foreach f in array array['public.is_staff()','public.is_admin()','public.has_perm(text)',
                            'public.my_class_ids()','public.deliver_due_messages()']
   loop
-    begin execute 'drop function if exists ' || f; exception when others then null; end;
+    execute 'drop function if exists ' || f;
   end loop;
 end $$;
 
@@ -373,9 +588,7 @@ begin
     from information_schema.columns
     where table_schema='public' and table_name='messages' and column_name='audience';
   if c.column_name is not null and c.data_type <> 'text' then
-    begin
-      execute 'alter table public.messages alter column audience type text using audience::text';
-    exception when others then null; end;
+    execute 'alter table public.messages alter column audience type text using audience::text';
   end if;
 end $$;
 -- Eski/bozuk deliver_due_messages + eksik kolonlar: tek ALTER yerine tabloyu
@@ -508,9 +721,14 @@ create policy staff_write_profiles on public.profiles for all to authenticated
   using (public.is_staff()) with check (public.is_staff());
 
 -- ogrenci kendi seviyesinin kelime/konusunu okur; ogretmen/yonetici her seyi
+-- Seviye siralamasi public.level_scale.rank'ten alinir (CEFR text: A1..C1)
 drop policy if exists read_words on public.words;
 create policy read_words on public.words for select to authenticated
-  using (public.is_staff() or level <= coalesce((select level from public.profiles where id=auth.uid()),1));
+  using (public.is_staff() or exists (
+    select 1 from public.level_scale wl, public.level_scale sl
+    where wl.level = words.level and sl.level = coalesce(
+      nullif((select level from public.profiles where id = auth.uid()), ''), 'A1')
+      and wl.rank <= sl.rank));
 drop policy if exists staff_write_words on public.words;
 create policy staff_write_words on public.words for all to authenticated
   using (public.has_perm('words.manage')) with check (public.has_perm('words.manage'));
@@ -519,7 +737,11 @@ drop policy if exists read_topics on public.topics;
 create policy read_topics on public.topics for select to authenticated
   using (public.is_staff()
     or exists (select 1 from public.topic_access a where a.topic_id=topics.id and a.student_id=auth.uid())
-    or level <= coalesce((select level from public.profiles where id=auth.uid()),1));
+    or exists (
+      select 1 from public.level_scale wl, public.level_scale sl
+      where wl.level = topics.level and sl.level = coalesce(
+        nullif((select level from public.profiles where id = auth.uid()), ''), 'A1')
+        and wl.rank <= sl.rank));
 drop policy if exists staff_write_topics on public.topics;
 create policy staff_write_topics on public.topics for all to authenticated
   using (public.has_perm('topics.manage')) with check (public.has_perm('topics.manage'));
@@ -610,6 +832,7 @@ create index if not exists ix_hw_targets_hw on public.homework_targets(homework_
 create index if not exists ix_notifications_student on public.notifications(student_id, created_at desc);
 create unique index if not exists ux_hwsub on public.homework_submissions(homework_id, student_id);
 create index if not exists ix_words_level on public.words(level);
+alter table public.topics add column if not exists sort_order int not null default 0; -- eski DB'lerde eksik olabilir
 create index if not exists ix_topics_level_sort on public.topics(level, sort_order);
 
 -- ---------- F) REALTIME YAYINI (idempotent) ----------
