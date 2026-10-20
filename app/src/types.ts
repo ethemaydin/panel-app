@@ -51,10 +51,13 @@ export interface Student {
   nxt: number; // next puzzle counter
   tc: number; // successful test count
   wl: number; // words learned count
-  tpass: Record<string, boolean>; // tests passed >= 60%
+  tpass: Record<string, boolean>; // tests passed >= pass_mark (panel ayarı)
   day?: { d: string; n: number }; // daily word study progress
   rem?: { on: boolean; time: string };
   act?: ActivePuzzle | null;
+  /** Panel Edge Function (create_student) ile açılan Supabase hesabının uuid'si.
+   * Yalnızca oluşturma anında id haritasını yazmak için kullanılır; kalıcı veri değil. */
+  remoteStudentUuid?: string;
   av?: StudentAvatar;
   cnt?: Record<string, number>; // test count tracker
 }

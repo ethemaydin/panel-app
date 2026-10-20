@@ -3,6 +3,7 @@ import { UserRole, Student } from '../types.ts';
 import { LOGO, genId } from '../utils/storage.ts';
 import { signInWithEmail, supabase } from '../lib/supabase.ts';
 import { syncFromSupabase } from '../utils/supabaseSync.ts';
+import { goalRange } from '../utils/panelSettings.ts';
 import { loadDatabase, AppDatabase } from '../utils/storage.ts';
 import { ForgotPasswordView } from './ForgotPasswordView.tsx';
 
@@ -117,7 +118,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ students, onLogin, onDbUpd
             e: em,
             pw: pw,
             h: {},
-            goal: 10,
+            goal: goalRange().min <= 10 && 10 <= goalRange().max ? 10 : goalRange().min,
             kn: [],
             must: profile.must_change_password || false,
             off: false,
@@ -165,12 +166,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ students, onLogin, onDbUpd
       <div>
         <div className="text-center pt-2 mb-4">
           <img
-            src={LOGO}
-            alt="English Base"
+            src={(window as any).__EB_LOGO || LOGO}
+            alt={(window as any).__EB_APP_NAME || 'English Base'}
             className="w-32 max-w-[42%] h-auto rounded-3xl mx-auto mb-3 shadow-[0_8px_24px_rgba(216,6,33,0.35)] object-contain"
           />
-          <h2 className="text-2xl font-bold font-heading text-[var(--pri)] mb-0.5">English Base</h2>
-          <p className="text-sm text-[var(--mute)]">Hesabınla giriş yap</p>
+          <h2 className="text-2xl font-bold font-heading text-[var(--pri)] mb-0.5">
+            {(window as any).__EB_APP_NAME || 'English Base'}
+          </h2>
+          <p className="text-sm text-[var(--mute)]">
+            {(window as any).__EB_WELCOME || 'Hesabınla giriş yap'}
+          </p>
         </div>
 
         <form onSubmit={handleLogin} className="p-4 rounded-2xl border shadow-sm" style={{ backgroundColor: 'var(--card)', borderColor: 'var(--line)' }}>

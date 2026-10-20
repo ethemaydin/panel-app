@@ -74,11 +74,12 @@ export const ForgotPasswordView: React.FC<Props> = ({ onBack, onDone }) => {
           : error.message);
         return;
       }
-      // must_change_password bayrağı artık gereksiz; profil güncellemesi sessizce denenir
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        await supabase.from('profiles').update({ must_change_password: false }).eq('id', user.id);
-      }
+      // Panel SQL uyumu (hata H): protect_profile tetikleyicisi, kullanıcının kendi
+      // profilinde must_change_password'u değiştirmesini "Bu alan değiştirilemez"
+      // diyerek REDDEDER. Bayrak temizliği app'ten yapılmaz; şifre zaten değiştiği için
+      // öğrenci bir sonraki girişte ForcePassword ekranıyla karşılaşmaz (must bayrağı
+      // lokalde LoginView'de profilden okunur ve panelden gelen true değeri yalnızca
+      // admin/öğretmen set_password akışıyla sıfırlanır).
       history.replaceState(null, '', location.pathname);
       await supabase.auth.signOut(); // temiz oturumla tekrar giriş yapsın
       onDone?.();

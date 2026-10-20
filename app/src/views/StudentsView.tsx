@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { Student, ClassGroup, Topic } from '../types.ts';
 import { rate, miss, prog, stv } from '../utils/logic.ts';
+import { invokeAdminUsers } from '../lib/supabase.ts';
+import { loadIdMap, saveIdMap } from '../utils/supabaseSync.ts';
+import { goalRange } from '../utils/panelSettings.ts';
 
 interface StudentsViewProps {
   students: Student[];
@@ -32,6 +35,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   const [classId, setClassId] = useState(classes[0]?.id || 'c1');
   const [level, setLevel] = useState('A1');
   const [errorMsg, setErrorMsg] = useState('');
+  const [creating, setCreating] = useState(false);
 
   const LV = ['A1', 'A2', 'B1', 'B2', 'C1'];
 
@@ -39,15 +43,18 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     setPassword(Math.random().toString(36).slice(2, 8));
   };
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     const n = name.trim();
     const em = email.trim().toLowerCase();
     const p = password.trim();
 
-    if (!n || !em.includes('@') || p.length < 4) {
-      setErrorMsg('Ad, geçerli e-posta ve en az 4 karakterli şifre gerekli.');
+    // Panel Edge Function (admin-users/create_student) en az 6 karakterli şifre ister;
+    // app daha düşük sınıra izin verirse sunucu isteği reddeder ve öğrencinin Supabase
+    // hesabı hiç açılmazdı → giriş/senkron çalışmaz. Sınır panelle birebir eşitlendi.
+    if (!n || !em.includes('@') || p.length < 6) {
+      setErrorMsg('Ad, geçerli e-posta ve en az 6 karakterli şifre gerekli.');
       return;
     }
     if (students.some((s) => s.e.toLowerCase() === em)) {
@@ -55,13 +62,40 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       return;
     }
 
+    setCreating(true);
+    // 1) Supabase tarafı: hesap açma yalnızca Edge Function ile yapılır (service-role
+    //    sunucuda). protect_profile + RLS nedeniyle app profiles'a doğrudan yazamaz.
+    let remoteErr = '';
+    let newUuid = '';
+    try {
+      const map = loadIdMap();
+      // lokal sınıf id -> supabase uuid (map.classes: uuid -> local id)
+      const sbClassUuid = Object.keys(map.classes).find((u) => map.classes[u] === classId) || null;
+      const res = await invokeAdminUsers({
+        action: 'create_student',
+        full_name: n,
+        email: em,
+        password: p,
+        level,
+        class_id: sbClassUuid,
+      });
+      if (res.error) remoteErr = res.error;
+      else newUuid = res.id || '';
+    } catch {
+      remoteErr = 'Sunucuya ulaşılamadı (çevrimdışı?).';
+    }
+    setCreating(false);
+
+    // 2) Lokal kayıt her durumda yapılır (uygulama çevrimdışı da çalışabilir).
+    //    remoteStudentUuid: App.tsx'teki onCreateStudent handler'ı gerçek genId() ile
+    //    eşleşen uuid->local haritasını orada yazar (yarış durumunu önlemek için).
     onCreateStudent({
       n,
       e: em,
       pw: p,
       c: classId,
       lv: level,
-      goal: 10,
+      goal: goalRange().min <= 10 && 10 <= goalRange().max ? 10 : goalRange().min,
       kn: [],
       must: true,
       p: 0,
@@ -74,8 +108,13 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       tc: 0,
       wl: 0,
       tpass: {},
-    });
+      remoteStudentUuid: newUuid || undefined,
+    } as Partial<Student>);
 
+    if (remoteErr) {
+      setErrorMsg(`Öğrenci locale eklendi ama Supabase hesabı açılamadı: ${remoteErr}`);
+      return;
+    }
     setNewStudentCreatedIndex(students.length);
     setName('');
     setEmail('');
@@ -274,7 +313,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                 type="text"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="En az 4 karakter"
+                placeholder="En az 6 karakter"
                 className="flex-1 p-2.5 rounded-xl border border-[var(--line)] bg-[var(--bg)] text-xs font-mono font-bold text-[var(--ink)]"
               />
               <button
@@ -331,10 +370,11 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
           <button
             id="as"
             type="submit"
-            className="w-full py-3.5 px-4 rounded-xl font-extrabold text-xs text-white shadow-md hover:brightness-105 active:scale-98 transition-all cursor-pointer"
+            disabled={creating}
+            className="w-full py-3.5 px-4 rounded-xl font-extrabold text-xs text-white shadow-md hover:brightness-105 active:scale-98 transition-all cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: 'var(--pri)' }}
           >
-            Hesabı oluştur
+            {creating ? 'Hesap açılıyor…' : 'Hesabı oluştur'}
           </button>
         </form>
       </div>

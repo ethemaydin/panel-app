@@ -9,10 +9,19 @@ interface IdMap {
   students: Record<string, string>; // supabase uuid -> local student id
   words: Record<string, number>;
   homeworks: Record<string, number>;
+  sessions?: Record<string, string>; // lokal anahtar ("clsIdx:date") -> attendance_sessions uuid
 }
 
 const ID_MAP_KEY = 'eb_id_map';
 const NOTIF_SEEN_KEY = 'eb_notif_seen'; // panelden alınan bildirim id'leri (dedup)
+
+// Yoklama senkronunda eşzamanlı yazmaları sıraya almak için basit promise kuyruğu
+let attQueue: Promise<void> = Promise.resolve();
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const run = attQueue.then(fn, fn);
+  attQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 export function loadIdMap(): IdMap {
   try {
@@ -421,6 +430,10 @@ export async function syncStudentProgress(student: Student): Promise<void> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+    // Panel SQL (protect_profile + profiles_read RLS): öğrenci yalnızca KENDİ profilini
+    // okuyabilir; rol/active kontrolü sunucuda. App, auth.uid ile yazıyor — uyumlu.
+    // Pasif (off) öğrencinin ilerlemesini yazmaya devam etmesi gereksiz istek üretir; atla.
+    if (student.off) return;
 
     const map = loadIdMap();
 
@@ -506,5 +519,133 @@ export async function syncStudentProgress(student: Student): Promise<void> {
     }
   } catch (err) {
     console.error('Progress sync hatası:', err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// YOKLAMA SENKRONU — panel SQL'i stats_students() içindeki
+// attendance_pct'i public.attendance_records üzerinden hesaplıyor:
+//   round(100 * count(*) filter (where r.status <> 'y') / count(*))
+// App yoklamayı lokal string (student.a) olarak tutuyordu; Supabase'e
+// hiç yazılmıyordu → panelde devamsızlık istatistiği daima boş/0.
+// Bu köprü, kaydedilen her oturumu attendance_sessions +
+// attendance_records tablolarına yazar. RLS: staff_read/staff_ins
+// politikaları teacher/admin rollerine insert izni verir (panel SQL s.271-279).
+// status değerleri panelle birebir: 'g' (geldi), 'y' (yok), 'i' (izinli).
+// ─────────────────────────────────────────────────────────────
+export async function syncAttendanceToSupabase(params: {
+  sessionKey: number | 'new';
+  classId: string;
+  dateLabel: string; // "21 Eki" biçimi — lokal oturum etiketi
+  fullDate: string;  // ISO tarih (session_date kolonu için)
+  records: Array<{ studentLocalId: string; status: string }>;
+}): Promise<void> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    await enqueue(async () => {
+      const map = loadIdMap();
+      const sessionsMap = map.sessions || {};
+      const sbClassId = map.classes[params.classId];
+      if (!sbClassId) return; // sınıf henüz Supabase'e eşlenmemiş — atla
+
+      const localKey = `${params.classId}:${params.dateLabel}`;
+      let sessionId = sessionsMap[localKey];
+
+      // Oturumu bul / oluştur (aynı sınıf+tarih için tek oturum garantisi)
+      if (!sessionId) {
+        const { data: existing } = await supabase
+          .from('attendance_sessions')
+          .select('id')
+          .eq('class_id', sbClassId)
+          .eq('session_date', params.fullDate)
+          .maybeSingle();
+        sessionId = existing?.id;
+      }
+      if (!sessionId) {
+        const { data: created, error } = await supabase
+          .from('attendance_sessions')
+          .insert({
+            class_id: sbClassId,
+            session_date: params.fullDate,
+            taken_by: user.id,
+          })
+          .select('id')
+          .single();
+        if (error || !created) {
+          console.error('attendance_sessions oluşturma hatası:', error);
+          return;
+        }
+        sessionId = created.id;
+        sessionsMap[localKey] = sessionId;
+        saveIdMap({ ...map, sessions: sessionsMap });
+      }
+
+      // Kayıtları topluca upsert et (öğrenci uuid'ye eşlenemeyenler atlanır)
+      const rows = params.records
+        .map((r) => {
+          const sbStudent = reverseFind(map.students, r.studentLocalId);
+          if (!sbStudent) return null;
+          return { session_id: sessionId, student_id: sbStudent, status: r.status };
+        })
+        .filter(Boolean) as Array<{ session_id: string; student_id: string; status: string }>;
+      if (!rows.length) return;
+
+      const { error } = await supabase
+        .from('attendance_records')
+        .upsert(rows, { onConflict: 'session_id,student_id' });
+      if (error) console.error('attendance_records upsert hatası:', error);
+    });
+  } catch (err) {
+    console.error('Yoklama senkron hatası:', err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BİLDİRİM (MESAJ) GÖNDERME KÖPRÜSÜ — panel SQL'i messages +
+// message_targets tabloları üzerinden çalışıyor:
+//   • pg_cron -> deliver_due_messages() zamanı gelen mesajları
+//     notifications tablosuna kopyalar (message_id ile dedup).
+//   • App planlı/anlık bildirimleri Supabase'e yazmıyordu → panelden
+//     takip edilemiyor, öğrenci cihazına realtime gitmiyordu.
+// RLS: message_targets insert yetkisi has_perm('messages.send') ister
+// (panel SQL s.252); teacher panelde bu yetki işaretlenmeden istek
+// reddedilir — hata sessizce loglanır, lokal gönderim yine çalışır.
+// ─────────────────────────────────────────────────────────────
+export async function sendMessageToSupabase(params: {
+  title: string;
+  body: string;
+  sendAt: Date;            // anlık gönderimde = now
+  studentLocalIds: Array<string | number>;
+}): Promise<void> {
+  try {
+    const map = loadIdMap();
+    const rows = params.studentLocalIds
+      .map((lid) => reverseFind(map.students, lid))
+      .filter(Boolean) as string[];
+    if (!rows.length) return; // hiçbir hedef Supabase profilinin uuid'sine eşlenememiş
+
+    const { data: msg, error: msgErr } = await supabase
+      .from('messages')
+      .insert({
+        title: params.title,
+        body: params.body,
+        send_at: params.sendAt.toISOString(),
+        sent: false, // sunucu tarafında deliver_due_messages() sent=true yapar
+      })
+      .select('id')
+      .single();
+    if (msgErr || !msg) {
+      console.error('messages insert hatası (messages.send yetkisi?):', msgErr);
+      return;
+    }
+
+    const { error: tgtErr } = await supabase
+      .from('message_targets')
+      .insert(rows.map((sid) => ({ message_id: msg.id, student_id: sid })));
+    if (tgtErr) console.error('message_targets insert hatası:', tgtErr);
+  } catch (err) {
+    console.error('Bildirim senkron hatası:', err);
   }
 }

@@ -1,4 +1,5 @@
 import React from 'react';
+import { passMark } from '../utils/panelSettings.ts';
 
 interface QuizResultViewProps {
   name: string;
@@ -20,7 +21,7 @@ export const QuizResultView: React.FC<QuizResultViewProps> = ({
   onBack,
 }) => {
   const pct = total > 0 ? Math.round((score / total) * 100) : 0;
-  const isPassed = pct >= 60;
+  const isPassed = pct >= passMark();
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-8 flex flex-col justify-between text-center">
@@ -47,7 +48,7 @@ export const QuizResultView: React.FC<QuizResultViewProps> = ({
           >
             {isPassed
               ? 'Konu testini geçtin ✓'
-              : 'Konuyu tamamlamak için en az %60 gerekiyor. Tekrar dene!'}
+              : `Konuyu tamamlamak için en az %${passMark()} gerekiyor. Tekrar dene!`}
           </div>
         )}
       </div>

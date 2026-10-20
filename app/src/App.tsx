@@ -21,20 +21,10 @@ import {
   saveDatabase,
   genId,
 } from './utils/storage.ts';
-import { syncStudentProgress, syncFromSupabase, loadIdMap } from './utils/supabaseSync.ts';
-import { applyPanelSettings } from './utils/panelSettings.ts';
+import { syncStudentProgress, syncFromSupabase, loadIdMap, saveIdMap, syncAttendanceToSupabase, sendMessageToSupabase } from './utils/supabaseSync.ts';
+import { applyPanelSettings, passMark, goalRange } from './utils/panelSettings.ts';
 import { supabase, invokeAdminUsers } from './lib/supabase.ts';
 
-/** Panelin geçme notu (app_settings.pass_mark; varsayılan %60) */
-export const passMark = () => {
-  const v = Number((window as any).__EB_PASSMARK);
-  return Number.isFinite(v) && v > 0 && v <= 100 ? v : 60;
-};
-/** Panelin günlük kelime hedefi aralığı (word_goal_min / word_goal_max) */
-export const goalRange = () => ({
-  min: Number((window as any).__EB_GOALMIN) || 5,
-  max: Number((window as any).__EB_GOALMAX) || 30,
-});
 import {
   shuf,
   today,
@@ -1114,13 +1104,25 @@ export default function App() {
                       setScreenState({ screen: 'stu-detail', studentId })
                     }
                     onCreateStudent={(newStudent) => {
+                      const id = (newStudent as Student).id || genId();
                       setDb((prev) => ({
                         ...prev,
                         students: [
                           ...prev.students,
-                          { ...(newStudent as Student), id: (newStudent as Student).id || genId() },
+                          { ...(newStudent as Student), id },
                         ],
                       }));
+                      // Panel Edge Function create_student ile açılan Supabase hesabının
+                      // uuid'sini gerçek lokal id ile eşle (topic_access/ödev hedefleri ve
+                      // ilerleme senkronu bu haritayı kullanır).
+                      const remoteUuid = (newStudent as any).remoteStudentUuid as string | undefined;
+                      if (remoteUuid) {
+                        try {
+                          const m = loadIdMap();
+                          m.students[remoteUuid] = id;
+                          saveIdMap(m);
+                        } catch {}
+                      }
                       showToast('Hesap Hazır', `${newStudent.n} hesabı başarıyla oluşturuldu.`);
                     }}
                   />
@@ -1232,8 +1234,11 @@ export default function App() {
                     sessions={db.sessions}
                     sessionClasses={db.sessionClasses}
                     onSaveAttendance={(classId, sessionKey, attendanceMap) => {
+                      const now = new Date();
                       const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
-                      const todayLabel = `${new Date().getDate()} ${months[new Date().getMonth()]}`;
+                      const todayLabel = `${now.getDate()} ${months[now.getMonth()]}`;
+                      // Panel SQL session_date (date) bekliyor — ISO biçiminde bugünün tarihi
+                      const fullDate = now.toISOString().slice(0, 10);
 
                       setDb((prev) => {
                         let newSessions = [...prev.sessions];
@@ -1267,6 +1272,28 @@ export default function App() {
                           students: updatedStudents,
                         };
                       });
+
+                      // ── Supabase yoklama köprüsü (panel stats_students.attendance_pct) ──
+                      // Sadece bu sınıftaki, pasif olmayan ve değeri olan öğrenciler yazılır.
+                      // attendance_records.status panelle birebir: 'g' / 'y' / 'i'.
+                      const classStudents = db.students.filter((s) => s.c === classId && !s.off);
+                      const records = classStudents
+                        .map((s) => {
+                          const status =
+                            (attendanceMap as Record<string, string>)[s.id] ||
+                            (sessionKey === 'new' ? 'g' : (s.a[Number(sessionKey)] || 'g'));
+                          return status === '-' ? null : { studentLocalId: String(s.id), status };
+                        })
+                        .filter(Boolean) as Array<{ studentLocalId: string; status: string }>;
+                      if (records.length) {
+                        void syncAttendanceToSupabase({
+                          sessionKey,
+                          classId,
+                          dateLabel: todayLabel,
+                          fullDate,
+                          records,
+                        });
+                      }
 
                       showToast('Yoklama Kaydedildi', 'Katılım durumları deftere işlendi.');
                     }}
@@ -1312,6 +1339,17 @@ export default function App() {
                         when === null ? 'Gönderildi' : 'Planlandı',
                         `${to.length} öğrenciye ${when === null ? 'iletildi' : 'planlandı'}.`
                       );
+
+                      // ── Supabase mesaj köprüsü: messages + message_targets ──
+                      // Anlık gönderimde send_at = now; planlı gönderimde hedef zaman.
+                      // Zamanı gelen mesajları sunucu deliver_due_messages() dağıtır
+                      // (pg_cron) — böylece planlı bildirimler panelden de görünür olur.
+                      void sendMessageToSupabase({
+                        title: t,
+                        body: m,
+                        sendAt: when === null ? new Date() : new Date(when),
+                        studentLocalIds: targetIds,
+                      });
                     }}
                     onDeliverNow={(msgId) => {
                       setDb((prev) => {
