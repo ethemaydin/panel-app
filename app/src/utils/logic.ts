@@ -197,3 +197,81 @@ export const esc = (s: unknown): string => {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 };
+
+// ---------- Puan / Seviye / Seri (English Base özgün eklentileri) ----------
+
+/** Bir sınav sonucundan kazanılan puan: %60 altı = 0, üstü = isabet sayısı × 5. */
+export const quizPoints = (score: number, total: number): number => {
+  if (total <= 0) return 0;
+  const pct = Math.round((score / total) * 100);
+  return pct >= 60 ? score * 5 : 0;
+};
+
+/** Seviye başına gereken puan (artan maliyetli ilerleme eğrisi). */
+export const LEVEL_STEP = 150;
+
+export interface LevelInfo {
+  points: number;
+  level: number;
+  intoLevel: number; // içinde bulunulan seviyede toplanan puan
+  needed: number; // bir sonraki seviye için gereken toplam
+  pct: number; // 0-100 (level barı)
+}
+
+export const lvl = (p: number): LevelInfo => {
+  const pts = Math.max(0, Math.floor(Number(p) || 0));
+  const level = Math.floor(pts / LEVEL_STEP) + 1;
+  const intoLevel = pts % LEVEL_STEP;
+  return {
+    points: pts,
+    level,
+    intoLevel,
+    needed: LEVEL_STEP,
+    pct: Math.round((intoLevel / LEVEL_STEP) * 100),
+  };
+};
+
+/** Ardışık gün sayısı (en sondan itibaren). Gün ISO 'YYYY-MM-DD' stringleri listesi. */
+export const computeStreak = (days: string[], todayIsoStr?: string): number => {
+  const set = new Set(days.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)));
+  if (!set.size) return 0;
+  let cursor = new Date(todayIsoStr ? todayIsoStr + 'T00:00:00' : Date.now());
+  // Bugün çalışılmadıysa dünden başla (seri henüz bozulmuş sayılmaz).
+  if (!set.has(iso(cursor))) cursor.setDate(cursor.getDate() - 1);
+  let n = 0;
+  while (set.has(iso(cursor))) {
+    n++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return n;
+};
+
+/** Quiz bitişinde verilecek yıldız (0-3). */
+export const starsFor = (pct: number): number => (pct >= 90 ? 3 : pct >= 75 ? 2 : pct >= 60 ? 1 : 0);
+
+/** Rozet tanımları — başarımlar ekranı bu listeyi kullanır. */
+export interface BadgeDef {
+  id: string;
+  ic: string;
+  t: string;
+  d: string;
+  goal: number;
+  cur: (s: Student) => number;
+}
+
+export const BADGES: BadgeDef[] = [
+  { id: 'first', ic: '🚀', t: 'İlk Adım', d: 'İlk konunu tamamla', goal: 1, cur: (s) => Object.keys(s.td || {}).length },
+  { id: 'scholar', ic: '🎓', t: 'Konu Bilgesi', d: '5 konu tamamla', goal: 5, cur: (s) => Object.keys(s.td || {}).length },
+  { id: 'word50', ic: '📖', t: 'Kelime Avcısı', d: '50 kelime öğren', goal: 50, cur: (s) => s.wl || 0 },
+  { id: 'word200', ic: '📚', t: 'Sözlük Kurucusu', d: '200 kelime öğren', goal: 200, cur: (s) => s.wl || 0 },
+  { id: 'quiz10', ic: '🧠', t: 'Test Maratoncusu', d: '10 testi geç', goal: 10, cur: (s) => s.tc || 0 },
+  { id: 'perfect', ic: '💯', t: 'Kusursuz', d: 'Bir testten %100 al', goal: 1, cur: (s) => (s.bd?.perfect ? 1 : 0) },
+  { id: 'streak3', ic: '🔥', t: 'Üç Gün Ateşi', d: '3 gün üst üste çalış', goal: 3, cur: (s) => computeStreak(s.dz || []) },
+  { id: 'streak7', ic: '⚡', t: 'Haftalık Şimşek', d: '7 gün üst üste çalış', goal: 7, cur: (s) => computeStreak(s.dz || []) },
+  { id: 'puzzle1', ic: '🧩', t: 'Parça Ustası', d: 'İlk yapbozunu tamamla', goal: 1, cur: (s) => (s.cp || []).length },
+  { id: 'points500', ic: '⭐', t: 'Puan Yıldızı', d: '500 puana ulaş', goal: 500, cur: (s) => s.p || 0 },
+];
+
+/** Öğrencinin kazandığı rozet id'leri. */
+export const earnedBadges = (s: Student): string[] =>
+  BADGES.filter((b) => b.cur(s) >= b.goal).map((b) => b.id);

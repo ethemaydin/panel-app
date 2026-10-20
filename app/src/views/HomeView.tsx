@@ -11,6 +11,8 @@ interface HomeViewProps {
   onOpenTopic: (topicId: string) => void;
   onStartQuiz: (key: string) => void;
   onStartCards: () => void;
+  onOpenBadges: () => void;
+  onOpenLeaderboard: () => void;
   onUpdateGoal: (newGoal: number) => void;
   onUpdateReminder: (on: boolean, time: string) => void;
 }
