@@ -114,10 +114,14 @@ export const AccountView: React.FC<AccountViewProps> = ({
     reader.readAsDataURL(file);
   };
 
-  // Puzzle leaderboard
-  const rankList = [...students].sort(
-    (a, b) => b.cp.length - a.cp.length || students.indexOf(a) - students.indexOf(b)
-  );
+  // Puzzle leaderboard — SADECE ÖĞRENCİLER (panel SQL: stats_students() p.role='student').
+  // Öğretmen/yönetici lokal öğrenci listesinde yer alsa bile sıralamadan çıkartılır;
+  // öğrencinin "yapboz sıralamasında öğretmen görünüyor" sorununun kök çözümü budur.
+  const rankList = [...students]
+    .filter((s) => s && !s.off && !(user.role === 't' && s.n === user.name))
+    .sort(
+      (a, b) => b.cp.length - a.cp.length || students.indexOf(a) - students.indexOf(b),
+    );
   const myRank = student ? rankList.indexOf(student) + 1 : 0;
 
   return (

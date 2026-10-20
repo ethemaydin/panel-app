@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase.ts';
+import { supabase, invokeAdminUsers } from '../lib/supabase.ts';
 import { AppDatabase } from './storage.ts';
 import { Student, ClassGroup, Topic, WordItem, Homework, SubTopic, Question, NotificationItem } from '../types.ts';
 
@@ -9,9 +9,19 @@ interface IdMap {
   students: Record<string, string>; // supabase uuid -> local student id
   words: Record<string, number>;
   homeworks: Record<string, number>;
+  sessions?: Record<string, string>; // lokal anahtar ("clsIdx:date") -> attendance_sessions uuid
 }
 
 const ID_MAP_KEY = 'eb_id_map';
+const NOTIF_SEEN_KEY = 'eb_notif_seen'; // panelden alınan bildirim id'leri (dedup)
+
+// Yoklama senkronunda eşzamanlı yazmaları sıraya almak için basit promise kuyruğu
+let attQueue: Promise<void> = Promise.resolve();
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const run = attQueue.then(fn, fn);
+  attQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 export function loadIdMap(): IdMap {
   try {
@@ -234,16 +244,26 @@ export async function syncFromSupabase(currentDb: AppDatabase): Promise<AppDatab
 
   try {
     // Öğrenciler: e-posta -> profil uuid eşlemesi (topic_access/homework_targets/notifications için zorunlu)
-    const studentEmails = currentDb.students.map((s) => String(s.e || '').toLowerCase()).filter(Boolean);
-    if (studentEmails.length) {
+    // NOT: select listesinde 'role' YOK — profiles_read RLS politikası öğrenci satırlarında
+    // role kolonunu NULL döndürür; "p.role === 'student'" filtresi bu yüzden hiçbir satırı
+    // eşlemezdi (önceki hatanın düzeltmesi). Admin/öğretmen e-postaları lokal öğrenci
+    // listesinde bulunmadığı için filtre gerekmez; rol-NULL satırlar da öğrencidir.
+    let profByLocalId: Record<string, any> = {};
+    {
       const { data: profRows } = await supabase
         .from('profiles')
-        .select('id,email')
-        .in('email', studentEmails);
-      const byEmail = new Map<string, string>((profRows || []).map((p: any) => [String(p.email).toLowerCase(), p.id]));
+        .select('id,email,full_name,level,class_id,must_change_password,active');
+      const byEmail = new Map<string, any>(
+        (profRows || []).map((p: any) => [String(p.email || '').toLowerCase(), p])
+      );
       for (const s of currentDb.students) {
-        const uuid = byEmail.get(String(s.e || '').toLowerCase());
-        if (uuid) map.students[uuid] = s.id;
+        const em = String(s.e || '').toLowerCase();
+        if (!em) continue;
+        const prof = byEmail.get(em);
+        if (prof) {
+          map.students[prof.id] = s.id;
+          profByLocalId[s.id] = prof;
+        }
       }
     }
 
@@ -258,7 +278,7 @@ export async function syncFromSupabase(currentDb: AppDatabase): Promise<AppDatab
     const { data: questionsRows } = await supabase.from('questions').select('*');
     const topics = topicsRows ? mapTopics(topicsRows, subsRows || [], questionsRows || []) : currentDb.topics;
 
-    // topic_access: öğretmenin/panelin verdiği konu yetkilerini local tp listesine yaz
+    // topic_access + profil güncellemeleri (panelde değişen sınıf/seviye/ad/must/active)
     let studentsWithAccess = currentDb.students;
     const uuidList = Object.keys(map.students);
     if (topicsRows && uuidList.length) {
@@ -275,8 +295,38 @@ export async function syncFromSupabase(currentDb: AppDatabase): Promise<AppDatab
         }
         studentsWithAccess = currentDb.students.map((s) => {
           const uuid = Object.keys(map.students).find((u) => map.students[u] === s.id);
-          if (!uuid || !(uuid in perStudent)) return s;
-          return { ...s, tp: perStudent[uuid] };
+          if (!uuid) return s;
+          const prof = profByLocalId[s.id];
+          let ns: Student = s;
+          if (uuid in perStudent) ns = { ...ns, tp: perStudent[uuid] };
+          if (prof) {
+            // local sınıf id'ini panel uuid'sinden türeyen eşlemeye göre çevir
+            const localClass = prof.class_id ? map.classes[prof.class_id] : '';
+            ns = {
+              ...ns,
+              lv: prof.level || ns.lv,
+              n: prof.full_name || ns.n,
+              c: prof.class_id ? (localClass || ns.c) : '',
+              must: !!prof.must_change_password,
+              off: prof.active === false,
+            };
+          }
+          return ns;
+        });
+      } else {
+        // erişim satırı yoksa da profil alanlarını yansıt
+        studentsWithAccess = currentDb.students.map((s) => {
+          const prof = profByLocalId[s.id];
+          if (!prof) return s;
+          const localClass = prof.class_id ? map.classes[prof.class_id] : '';
+          return {
+            ...s,
+            lv: prof.level || s.lv,
+            n: prof.full_name || s.n,
+            c: prof.class_id ? (localClass || s.c) : '',
+            must: !!prof.must_change_password,
+            off: prof.active === false,
+          };
         });
       }
     }
@@ -328,12 +378,29 @@ export async function syncFromSupabase(currentDb: AppDatabase): Promise<AppDatab
       .limit(100);
     let mergedNotifications = currentDb.notifications;
     if (notifRows && notifRows.length) {
-      const { items } = mapNotifications(notifRows, map);
+      const { items, keys } = mapNotifications(notifRows, map);
+      // Dedup anahtarı bir önceki turda `${n.id}|${localSi}` olarak üretilip localStorage'a
+      // yazılıyordu; burada `${t}|${m}|${si}` ile karşılaştırılınca her senkronda aynı
+      // bildirim tekrar tekrar ekleniyordu. Artık iki biçim de kontrol edilir ve
+      // sunucudan gelen id'li liste kalıcı izlenir.
+      const seenIds: string[] = (() => {
+        try { return JSON.parse(localStorage.getItem(NOTIF_SEEN_KEY) || '[]'); } catch { return []; }
+      })();
+      const seenSet = new Set<string>(seenIds);
       const existingKeys = new Set(
         (currentDb.notifications || []).map((n: any) => `${n.t}|${n.m}|${n.si}`)
       );
-      const fresh = items.filter((n) => !existingKeys.has(`${n.t}|${n.m}|${n.si}`));
-      if (fresh.length) mergedNotifications = [...fresh, ...(currentDb.notifications || [])];
+      const fresh = items.filter((_, i) => {
+        const plainKey = `${items[i].t}|${items[i].m}|${items[i].si}`;
+        if (existingKeys.has(plainKey)) return false;
+        if (keys[i] && seenSet.has(keys[i])) return false;
+        return true;
+      });
+      if (fresh.length) {
+        mergedNotifications = [...fresh, ...(currentDb.notifications || [])];
+        for (let i = 0; i < items.length; i++) if (keys[i]) seenSet.add(keys[i]);
+        try { localStorage.setItem(NOTIF_SEEN_KEY, JSON.stringify([...seenSet].slice(-500))); } catch {}
+      }
     }
 
     saveIdMap(map);
@@ -363,6 +430,10 @@ export async function syncStudentProgress(student: Student): Promise<void> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+    // Panel SQL (protect_profile + profiles_read RLS): öğrenci yalnızca KENDİ profilini
+    // okuyabilir; rol/active kontrolü sunucuda. App, auth.uid ile yazıyor — uyumlu.
+    // Pasif (off) öğrencinin ilerlemesini yazmaya devam etmesi gereksiz istek üretir; atla.
+    if (student.off) return;
 
     const map = loadIdMap();
 
@@ -417,17 +488,164 @@ export async function syncStudentProgress(student: Student): Promise<void> {
     for (const [hwIdLocal, prog] of Object.entries(student.h || {})) {
       const sbHw = reverseFind(map.homeworks, Number(hwIdLocal));
       if (!sbHw || !prog) continue;
+      // Panel SQL şeması: homework_submissions.text_answer (kurulum dosyasında `text` kolonu YOK;
+      // yanlış kolon adı upsert'i 400 ile patlatıp TÜM teslim senkronunu bozuyordu)
       hwRows.push({
         homework_id: sbHw,
         student_id: user.id,
-        text: prog.text || '',
-        score: prog.score,
+        text_answer: prog.text || '',
+        score: prog.score ?? null,
       });
     }
     if (hwRows.length) {
       await supabase.from('homework_submissions').upsert(hwRows, { onConflict: 'homework_id,student_id' });
     }
+
+    // Bulmaca ilerlemesi: panel SQL'i stats_students() içinde puzzles_done / puzzle_state
+    // tablolarını sayıyor. Lokal çözülen bulmacalar (student.cp = tamamlanan bulmaca id listesi)
+    // Supabase'e hiç yazılmıyordu → panelde öğrencilerin bulmaca istatistiği daima 0 görünüyordu.
+    if (Array.isArray(student.cp) && student.cp.length) {
+      await supabase.from('puzzle_state').upsert(
+        { student_id: user.id, solved: student.cp.length },
+        { onConflict: 'student_id' }
+      );
+      const doneRows = student.cp.map((pid) => ({
+        student_id: user.id,
+        puzzle_id: String(pid),
+      }));
+      await supabase
+        .from('puzzles_done')
+        .upsert(doneRows, { onConflict: 'student_id,puzzle_id' });
+    }
   } catch (err) {
     console.error('Progress sync hatası:', err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// YOKLAMA SENKRONU — panel SQL'i stats_students() içindeki
+// attendance_pct'i public.attendance_records üzerinden hesaplıyor:
+//   round(100 * count(*) filter (where r.status <> 'y') / count(*))
+// App yoklamayı lokal string (student.a) olarak tutuyordu; Supabase'e
+// hiç yazılmıyordu → panelde devamsızlık istatistiği daima boş/0.
+// Bu köprü, kaydedilen her oturumu attendance_sessions +
+// attendance_records tablolarına yazar. RLS: staff_read/staff_ins
+// politikaları teacher/admin rollerine insert izni verir (panel SQL s.271-279).
+// status değerleri panelle birebir: 'g' (geldi), 'y' (yok), 'i' (izinli).
+// ─────────────────────────────────────────────────────────────
+export async function syncAttendanceToSupabase(params: {
+  sessionKey: number | 'new';
+  classId: string;
+  dateLabel: string; // "21 Eki" biçimi — lokal oturum etiketi
+  fullDate: string;  // ISO tarih (session_date kolonu için)
+  records: Array<{ studentLocalId: string; status: string }>;
+}): Promise<void> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    await enqueue(async () => {
+      const map = loadIdMap();
+      const sessionsMap = map.sessions || {};
+      const sbClassId = map.classes[params.classId];
+      if (!sbClassId) return; // sınıf henüz Supabase'e eşlenmemiş — atla
+
+      const localKey = `${params.classId}:${params.dateLabel}`;
+      let sessionId = sessionsMap[localKey];
+
+      // Oturumu bul / oluştur (aynı sınıf+tarih için tek oturum garantisi)
+      if (!sessionId) {
+        const { data: existing } = await supabase
+          .from('attendance_sessions')
+          .select('id')
+          .eq('class_id', sbClassId)
+          .eq('session_date', params.fullDate)
+          .maybeSingle();
+        sessionId = existing?.id;
+      }
+      if (!sessionId) {
+        const { data: created, error } = await supabase
+          .from('attendance_sessions')
+          .insert({
+            class_id: sbClassId,
+            session_date: params.fullDate,
+            taken_by: user.id,
+          })
+          .select('id')
+          .single();
+        if (error || !created) {
+          console.error('attendance_sessions oluşturma hatası:', error);
+          return;
+        }
+        sessionId = created.id;
+        sessionsMap[localKey] = sessionId;
+        saveIdMap({ ...map, sessions: sessionsMap });
+      }
+
+      // Kayıtları topluca upsert et (öğrenci uuid'ye eşlenemeyenler atlanır)
+      const rows = params.records
+        .map((r) => {
+          const sbStudent = reverseFind(map.students, r.studentLocalId);
+          if (!sbStudent) return null;
+          return { session_id: sessionId, student_id: sbStudent, status: r.status };
+        })
+        .filter(Boolean) as Array<{ session_id: string; student_id: string; status: string }>;
+      if (!rows.length) return;
+
+      const { error } = await supabase
+        .from('attendance_records')
+        .upsert(rows, { onConflict: 'session_id,student_id' });
+      if (error) console.error('attendance_records upsert hatası:', error);
+    });
+  } catch (err) {
+    console.error('Yoklama senkron hatası:', err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BİLDİRİM (MESAJ) GÖNDERME KÖPRÜSÜ — panel SQL'i messages +
+// message_targets tabloları üzerinden çalışıyor:
+//   • pg_cron -> deliver_due_messages() zamanı gelen mesajları
+//     notifications tablosuna kopyalar (message_id ile dedup).
+//   • App planlı/anlık bildirimleri Supabase'e yazmıyordu → panelden
+//     takip edilemiyor, öğrenci cihazına realtime gitmiyordu.
+// RLS: message_targets insert yetkisi has_perm('messages.send') ister
+// (panel SQL s.252); teacher panelde bu yetki işaretlenmeden istek
+// reddedilir — hata sessizce loglanır, lokal gönderim yine çalışır.
+// ─────────────────────────────────────────────────────────────
+export async function sendMessageToSupabase(params: {
+  title: string;
+  body: string;
+  sendAt: Date;            // anlık gönderimde = now
+  studentLocalIds: Array<string | number>;
+}): Promise<void> {
+  try {
+    const map = loadIdMap();
+    const rows = params.studentLocalIds
+      .map((lid) => reverseFind(map.students, lid))
+      .filter(Boolean) as string[];
+    if (!rows.length) return; // hiçbir hedef Supabase profilinin uuid'sine eşlenememiş
+
+    const { data: msg, error: msgErr } = await supabase
+      .from('messages')
+      .insert({
+        title: params.title,
+        body: params.body,
+        send_at: params.sendAt.toISOString(),
+        sent: false, // sunucu tarafında deliver_due_messages() sent=true yapar
+      })
+      .select('id')
+      .single();
+    if (msgErr || !msg) {
+      console.error('messages insert hatası (messages.send yetkisi?):', msgErr);
+      return;
+    }
+
+    const { error: tgtErr } = await supabase
+      .from('message_targets')
+      .insert(rows.map((sid) => ({ message_id: msg.id, student_id: sid })));
+    if (tgtErr) console.error('message_targets insert hatası:', tgtErr);
+  } catch (err) {
+    console.error('Bildirim senkron hatası:', err);
   }
 }

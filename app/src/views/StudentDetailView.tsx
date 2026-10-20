@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Student, ClassGroup, Topic, WordItem } from '../types.ts';
 import { rate, miss, prog, stv, pzInit } from '../utils/logic.ts';
+import { invokeAdminUsers } from '../lib/supabase.ts';
+import { loadIdMap } from '../utils/supabaseSync.ts';
 
 interface StudentDetailViewProps {
   student: Student;
@@ -44,6 +46,10 @@ export const StudentDetailView: React.FC<StudentDetailViewProps> = ({
       lv: newLv,
       tp: undefined, // reset to default for level
     });
+    // Panel SQL uyumu: seviye değişikliği Supabase profiles.level'e de yazılmalı.
+    // Doğrudan profiles UPDATE yerine Edge Function "update_student" kullanılır;
+    // protect_profile tetikleyicisi + RLS (students.edit yetkisi) doğrudan yazmayı reddeder.
+    void pushProfileUpdate({ level: newLv });
   };
 
   const handleClassChange = (newCid: string) => {
@@ -51,6 +57,26 @@ export const StudentDetailView: React.FC<StudentDetailViewProps> = ({
       ...student,
       c: newCid,
     });
+    // Sınıf değişikliği paneldaki stats/kapsam hesaplarını etkiler → profiles.class_id güncelle.
+    // Edge function tarafı students.move yetkisini ve hedef sınıf kapsamını sunucuda doğrular.
+    void pushProfileUpdate({ class_id: newCid || null });
+  };
+
+  /**
+   * Öğrencinin profil alanlarını Supabase'e Edge Function (admin-users / update_student)
+   * üzerinden gönderir. Panelden gelen uuid eşlemesi yoksa (öğrenci henüz Supabase hesabı
+   * değilse) sessizce geçer — lokal veritabanı tek kaynak olmaya devam eder.
+   */
+  const pushProfileUpdate = async (fields: Record<string, unknown>) => {
+    try {
+      const map = loadIdMap();
+      const uuid = Object.keys(map.students).find((u) => map.students[u] === student.id);
+      if (!uuid) return;
+      const res = await invokeAdminUsers({ action: 'update_student', user_id: uuid, ...fields });
+      if (res.error) setInfoFeedback(`Panele yansıtılamadı: ${res.error}`);
+    } catch {
+      /* çevrimdışı: lokal kayıt zaten yapıldı */
+    }
   };
 
   const toggleTopicPermission = (topicId: string, checked: boolean) => {
@@ -71,19 +97,38 @@ export const StudentDetailView: React.FC<StudentDetailViewProps> = ({
       setInfoFeedback('Geçerli bir ad ve e-posta yazınız.');
       return;
     }
+    const emailChanged = e !== String(student.e || '').toLowerCase();
     onUpdateStudent({
       ...student,
       n,
       e,
     });
+    // Panel SQL uyumu: profiles.full_name doğrudan UPDATE edilemez (protect_profile + RLS).
+    // Ad için Edge Function "update_student", e-posta değişikliği için "update_email" kullanılır.
+    (async () => {
+      const map = loadIdMap();
+      const uuid = Object.keys(map.students).find((u) => map.students[u] === student.id);
+      if (!uuid) return; // öğrencinin Supabase hesabı yok — yalnızca lokal kayıt
+      const res = await invokeAdminUsers({ action: 'update_student', user_id: uuid, full_name: n });
+      if (res.error) {
+        setInfoFeedback(`Panele yansıtılamadı: ${res.error}`);
+        return;
+      }
+      if (emailChanged) {
+        const r2 = await invokeAdminUsers({ action: 'update_email', user_id: uuid, email: e });
+        if (r2.error) setInfoFeedback(`E-posta panele işlenemedi: ${r2.error}`);
+      }
+    })().catch(() => {});
     setInfoFeedback('Bilgiler kaydedildi ✓');
     setTimeout(() => setInfoFeedback(''), 3000);
   };
 
   const handleUpdatePassword = () => {
     const p = newPassword.trim();
-    if (p.length < 4) {
-      setPwFeedback('Şifre en az 4 karakter olmalıdır.');
+    // Edge Function (admin-users / set_password) en az 6 karakter ister; app de aynı
+    // sınırı uygulamazsa sunucu isteği reddeder ve şifre-şifre uyumsuzluğu oluşurdu.
+    if (p.length < 6) {
+      setPwFeedback('Şifre en az 6 karakter olmalıdır.');
       return;
     }
     onUpdateStudent({
@@ -91,16 +136,36 @@ export const StudentDetailView: React.FC<StudentDetailViewProps> = ({
       pw: p,
       must: true,
     });
+    // Supabase tarafında şifreyi yalnızca Edge Function değiştirir (auth.admin);
+    // ayrıca protect_profile nedeniyle must_change_password'u app'ten yazamayız —
+    // fonksiyonun set_password kolu bu bayrağı service role ile kendisi ayarlar.
+    (async () => {
+      const map = loadIdMap();
+      const uuid = Object.keys(map.students).find((u) => map.students[u] === student.id);
+      if (!uuid) return;
+      const res = await invokeAdminUsers({ action: 'set_password', user_id: uuid, password: p });
+      if (res.error) setPwFeedback(`Supabase'e işlenemedi: ${res.error}`);
+    })().catch(() => {});
     setNewPassword('');
     setPwFeedback('Şifre güncellendi ✓');
     setTimeout(() => setPwFeedback(''), 3000);
   };
 
   const handleToggleActive = () => {
+    const nowOff = !student.off;
     onUpdateStudent({
       ...student,
-      off: !student.off,
+      off: nowOff,
     });
+    // Panel SQL: profiles.active yalnızca students.deactivate yetkisiyle değişir;
+    // auth kullanıcısının banlanması da Edge Function (set_active) tarafında yapılır.
+    (async () => {
+      const map = loadIdMap();
+      const uuid = Object.keys(map.students).find((u) => map.students[u] === student.id);
+      if (!uuid) return;
+      const res = await invokeAdminUsers({ action: 'set_active', user_id: uuid, active: !nowOff });
+      if (res.error) setInfoFeedback(`Pasife alma panele işlenemedi: ${res.error}`);
+    })().catch(() => {});
   };
 
   const mailLink = `mailto:${student.e}?subject=English Base Giriş Bilgilerin&body=Merhaba ${student.n}, English Base giriş bilgilerin: E-posta: ${student.e}, Şifre: ${student.pw}`;

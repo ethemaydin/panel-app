@@ -54,6 +54,18 @@ export async function applyPanelSettings(): Promise<Record<string, unknown>> {
   return s;
 }
 
+/** Panelin geçme notu (app_settings.pass_mark; varsayılan %60). */
+export const passMark = () => {
+  const v = Number((window as any).__EB_PASSMARK);
+  return Number.isFinite(v) && v > 0 && v <= 100 ? v : 60;
+};
+
+/** Panelin günlük kelime hedefi aralığı (word_goal_min / word_goal_max). */
+export const goalRange = () => ({
+  min: Number((window as any).__EB_GOALMIN) || 5,
+  max: Number((window as any).__EB_GOALMAX) || 30,
+});
+
 /** #hex rengin üzerine okunur yazı rengi (#fff veya #111). */
 function contrastText(hex: string): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());

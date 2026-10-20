@@ -15,14 +15,20 @@ import {
   NotificationItem,
   BroadcastMessage,
   Question,
+  ProfileRole,
+  Perms,
+  ALL_PERMS,
+  userCan,
 } from './types.ts';
 import {
   loadDatabase,
   saveDatabase,
   genId,
 } from './utils/storage.ts';
-import { syncStudentProgress, syncFromSupabase, loadIdMap } from './utils/supabaseSync.ts';
-import { supabase } from './lib/supabase.ts';
+import { syncStudentProgress, syncFromSupabase, loadIdMap, saveIdMap, syncAttendanceToSupabase, sendMessageToSupabase } from './utils/supabaseSync.ts';
+import { applyPanelSettings, passMark, goalRange } from './utils/panelSettings.ts';
+import { supabase, invokeAdminUsers } from './lib/supabase.ts';
+
 import {
   shuf,
   today,
@@ -100,6 +106,9 @@ const MissingScreen: React.FC<{ label: string; onBack: () => void }> = ({ label,
   </div>
 );
 
+/** Supabase'de uuid eşlemesi olmayan (henüz hesap açılmamış) lokal öğrenciler için id öneki. */
+export const LOCAL_STU_PREFIX = 'lstu-';
+
 export default function App() {
   const [db, setDb] = useState(loadDatabase);
   const [user, setUser] = useState<User | null>(() => {
@@ -117,6 +126,20 @@ export default function App() {
   const [lastScores, setLastScores] = useState<Record<string, number>>({});
   const [toast, setToast] = useState<ToastData | null>(null);
   const [celebration, setCelebration] = useState<CelebrationData | null>(null);
+  // Panel bakım modu (app_settings.maintenance_message doluysa uygulama kilitlenir)
+  const [maintenance, setMaintenance] = useState<string>('');
+
+  // Panel ayarlarını çek ve uygula (renkler/logo/kelime hedefi/geçme notu/bakım mesajı).
+  // Bu çağrı olmadan panelin "Uygulama Ayarları" ekranı uygulamaya hiç yansımıyordu.
+  useEffect(() => {
+    let alive = true;
+    applyPanelSettings().then((s) => {
+      if (!alive) return;
+      const m = typeof s.maintenance_message === 'string' ? s.maintenance_message.trim() : '';
+      setMaintenance(m);
+    });
+    return () => { alive = false; };
+  }, []);
 
   // Sync database with localStorage
   useEffect(() => {
@@ -131,6 +154,44 @@ export default function App() {
       localStorage.removeItem('eb_session_user');
     }
   }, [user]);
+
+  // ── Rol/perms tazeleme (panel SQL hiyerarşisi) ──
+  // Oturum localStorage'dan restore edildiğinde profileRole/perms eski olabilir;
+  // yönetici panelden öğretmenin yetkilerini değiştirdiğinde app'in de aynı
+  // görümü görmesi için profil her seferinde Supabase'den tazelenir.
+  // (SQL notu: profiles_read politikası rolü yalnız id=auth.uid() veya admin'de
+  //  gösterir — bu yüzden select 'or' ile değil, kullanıcının KENDİ satırıyla yapılır.)
+  useEffect(() => {
+    if (!user || user.role !== 't') return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data: me } = await supabase.auth.getUser();
+        if (!alive || !me.data.user) return;
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('role,perms,active,full_name,must_change_password')
+          .eq('id', me.data.user.id)
+          .maybeSingle();
+        if (!alive || !prof) return;
+        const profileRole: ProfileRole =
+          prof.role === 'admin' ? 'admin' : prof.role === 'teacher' ? 'teacher' : 'student';
+        const perms: Perms =
+          profileRole === 'admin'
+            ? (Object.fromEntries(ALL_PERMS.map((p) => [p, true])) as Perms)
+            : ((prof.perms && typeof prof.perms === 'object' ? prof.perms : {}) as Perms);
+        setUser((cur) =>
+          cur && cur.role === 't'
+            ? { ...cur, profileRole, perms, name: prof.full_name || cur.name }
+            : cur,
+        );
+      } catch {
+        /* çevrimdışı: mevcut oturumla devam */
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, user?.role]);
 
   // Apply theme
   useEffect(() => {
@@ -211,7 +272,10 @@ export default function App() {
             notifications: fresh.notifications,
             students: prev.students.map((ps) => {
               const fs = fresh.students.find((x) => x.id === ps.id);
-              return fs ? { ...ps, tp: fs.tp } : ps; // sadece erişim listesi senkronlanır
+              if (!fs) return ps;
+              // Sadece erişim listesi değil; öğretmenin panelden yaptığı sınıf/seviye/ad
+              // değişiklikleri de oturum içinde öğrenci/öğretmen ekranına yansısın.
+              return { ...ps, tp: fs.tp, c: fs.c ?? ps.c, lv: fs.lv ?? ps.lv, n: fs.n || ps.n };
             }),
           };
           saveDatabase(merged);
@@ -235,7 +299,12 @@ export default function App() {
           if (debounce) clearTimeout(debounce);
           debounce = setTimeout(refreshContent, 1500);
         };
-        ['topics', 'subtopics', 'questions', 'words', 'homework', 'homework_targets', 'topic_access', 'notifications'].forEach((table) => {
+        [
+          'topics', 'subtopics', 'questions', 'words', 'homework', 'homework_targets',
+          'topic_access', 'notifications', 'messages', 'profiles',
+          // 'classes' realtime: panelde sınıf adı değiştiğinde app'in mapClasses cache'i tazelenmeli
+          'classes',
+        ].forEach((table) => {
           supabase
             .channel(`rt-${table}`)
             .on('postgres_changes', { schema: 'public', event: '*', table }, onChange)
@@ -369,9 +438,9 @@ export default function App() {
         const students = [...prev.students];
         let s = { ...students[idx] };
 
-        // If topic test passed
+        // If topic test passed — geçme notu panelden gelir (app_settings.pass_mark)
         const topic = prev.topics.find((t) => t.id === key);
-        if (topic && pct >= 60) {
+        if (topic && pct >= passMark()) {
           s.tpass = { ...s.tpass, [topic.id]: true };
           const subs = topic.subs || [];
           const allSubsDone = subs.every((sub) => s.sd[sub.id]);
@@ -383,7 +452,7 @@ export default function App() {
         // Test count tracker for puzzle piece (each 5 test passes)
         s.cnt = s.cnt || {};
         const countKey = `${key}|${today()}`;
-        if (pct >= 60 && !s.cnt[countKey]) {
+        if (pct >= passMark() && !s.cnt[countKey]) {
           s.cnt = { ...s.cnt, [countKey]: 1 };
           s.tc = (s.tc || 0) + 1;
           if (s.tc % 5 === 0) {
@@ -526,6 +595,23 @@ export default function App() {
   return (
     <ErrorBoundary>
     <AndroidFrame theme={theme}>
+      {maintenance ? (
+        /* Panel bakım modu: admin app_settings.maintenance_message doldurduğunda uygulama kilitlenir */
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <span className="text-6xl">🛠️</span>
+          <h2 className="text-xl font-black text-[var(--ink)]">Bakım Çalışması</h2>
+          <p className="text-sm text-[var(--mute)] max-w-xs font-medium whitespace-pre-line">{maintenance}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="py-3 px-6 rounded-xl font-extrabold text-sm cursor-pointer shadow-md"
+            style={{ backgroundColor: 'var(--pri)', color: 'var(--onpri)' }}
+          >
+            Yenile
+          </button>
+        </div>
+      ) : (
+      <>
       <Toast toast={toast} onClose={() => setToast(null)} />
       <CelebrationModal
         data={celebration}
@@ -562,18 +648,12 @@ export default function App() {
                 return { ...prev, students };
               });
               setUser({ ...user, pw: newPw });
-              // Şifre değişikliğini Supabase profiline de işle (tek yönlü lokal güncelleme veri kaybına yol açıyordu)
-              (async () => {
-                try {
-                            const { data: { user: authUser } } = await supabase.auth.getUser();
-                  if (authUser) {
-                    await supabase
-                      .from('profiles')
-                      .update({ must_change_password: false })
-                      .eq('id', authUser.id);
-                  }
-                } catch {}
-              })();
+              // Panel SQL uyumu (hata A): protect_profile tetikleyicisi öğrencinin kendi
+              // profilinde must_change_password'u false yapmasını "Bu alan değiştirilemez"
+              // diyerek REDDEDER. ForcePasswordView zaten auth.updatePassword() ile şifreyi
+              // Supabase Auth'ta değiştirdi; app artık profiles'a doğrudan yazmıyor.
+              // (Not: Edge Function 'set_password' bayrağı true yapar — bu yüzden burada
+              // çağrılmaz; temizlik panelden/admin akışından yapılır.)
               showToast('Şifre Belirlendi', 'Yeni şifreniz başarıyla kaydedildi.');
             }}
           />
@@ -875,10 +955,19 @@ export default function App() {
             students={db.students}
             onBack={() => setScreenState({ screen: 'main' })}
             onSaveClassNames={(updated) => {
+              // Panel SQL: sınıf yönetimi 'classes.manage' yetkisi ister.
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf düzenlemek için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({ ...prev, classes: updated }));
               showToast('Kaydedildi', 'Sınıf adları güncellendi.');
             }}
             onAddClass={(name) => {
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf oluşturmak için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({
                 ...prev,
                 classes: [...prev.classes, { id: `c${Date.now()}`, n: name }],
@@ -886,6 +975,10 @@ export default function App() {
               showToast('Eklendi', `${name} sınıfı oluşturuldu.`);
             }}
             onDeleteClass={(cid) => {
+              if (!userCan(user, 'classes.manage')) {
+                showToast('Yetki Gerekli', 'Sınıf silmek için yöneticiden "Sınıf yönetimi" yetkisi gerekir.');
+                return;
+              }
               setDb((prev) => ({
                 ...prev,
                 classes: prev.classes.filter((c) => c.id !== cid),
@@ -1065,14 +1158,27 @@ export default function App() {
                     onSelectStudent={(studentId) =>
                       setScreenState({ screen: 'stu-detail', studentId })
                     }
+                    user={user}
                     onCreateStudent={(newStudent) => {
+                      const id = (newStudent as Student).id || genId();
                       setDb((prev) => ({
                         ...prev,
                         students: [
                           ...prev.students,
-                          { ...(newStudent as Student), id: (newStudent as Student).id || genId() },
+                          { ...(newStudent as Student), id },
                         ],
                       }));
+                      // Panel Edge Function create_student ile açılan Supabase hesabının
+                      // uuid'sini gerçek lokal id ile eşle (topic_access/ödev hedefleri ve
+                      // ilerleme senkronu bu haritayı kullanır).
+                      const remoteUuid = (newStudent as any).remoteStudentUuid as string | undefined;
+                      if (remoteUuid) {
+                        try {
+                          const m = loadIdMap();
+                          m.students[remoteUuid] = id;
+                          saveIdMap(m);
+                        } catch {}
+                      }
                       showToast('Hesap Hazır', `${newStudent.n} hesabı başarıyla oluşturuldu.`);
                     }}
                   />
@@ -1082,10 +1188,19 @@ export default function App() {
                   <TeacherCalendarView
                     lessons={db.lessons}
                     notifications={db.notifications}
-                    onOpenLesson={(lid, oc) =>
-                      setScreenState({ screen: 'led', lid, oc })
-                    }
+                    onOpenLesson={(lid, oc) => {
+                      // Panel SQL: ders planlama 'lessons.manage' yetkisi ister.
+                      if (!userCan(user, 'lessons.manage')) {
+                        showToast('Yetki Gerekli', 'Ders düzenlemek için yöneticiden "Ders yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'led', lid, oc });
+                    }}
                     onNewLesson={() => {
+                      if (!userCan(user, 'lessons.manage')) {
+                        showToast('Yetki Gerekli', 'Ders oluşturmak için yöneticiden "Ders yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newLesson: LessonSchedule = {
                         id: Date.now(),
                         t: 'Yeni ders',
@@ -1109,8 +1224,19 @@ export default function App() {
                     words={db.words}
                     homeworks={db.homeworks}
                     students={db.students}
-                    onOpenTopicEditor={(id) => setScreenState({ screen: 'ted', id })}
+                    onOpenTopicEditor={(id) => {
+                      // Panel SQL: konu/soru yönetimi 'topics.manage' yetkisi ister.
+                      if (!userCan(user, 'topics.manage')) {
+                        showToast('Yetki Gerekli', 'Konu düzenlemek için yöneticiden "Konu yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'ted', id });
+                    }}
                     onNewTopic={() => {
+                      if (!userCan(user, 'topics.manage')) {
+                        showToast('Yetki Gerekli', 'Konu oluşturmak için yöneticiden "Konu yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newTopic: Topic = {
                         id: `x${Date.now()}`,
                         ic: '📘',
@@ -1130,6 +1256,11 @@ export default function App() {
                       setScreenState({ screen: 'ted', id: newTopic.id });
                     }}
                     onSaveWord={(word) => {
+                      // Panel SQL: kelime yönetimi 'words.manage' yetkisi ister.
+                      if (!userCan(user, 'words.manage')) {
+                        showToast('Yetki Gerekli', 'Kelime eklemek için yöneticiden "Kelime yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       setDb((prev) => {
                         if (word.id) {
                           return {
@@ -1150,14 +1281,29 @@ export default function App() {
                       showToast('Kelime Kaydedildi', `${word.e} listeye eklendi.`);
                     }}
                     onDeleteWord={(wid) => {
+                      if (!userCan(user, 'words.manage')) {
+                        showToast('Yetki Gerekli', 'Kelime silmek için yöneticiden "Kelime yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       setDb((prev) => ({
                         ...prev,
                         words: prev.words.filter((w) => w.id !== wid),
                       }));
                       showToast('Silindi', 'Kelime silindi.');
                     }}
-                    onOpenHomeworkEditor={(hwId) => setScreenState({ screen: 'hed', hwId })}
+                    onOpenHomeworkEditor={(hwId) => {
+                      // Panel SQL: ödev yönetimi 'homework.manage' yetkisi ister.
+                      if (!userCan(user, 'homework.manage')) {
+                        showToast('Yetki Gerekli', 'Ödev düzenlemek için yöneticiden "Ödev yönetimi" yetkisi gerekir.');
+                        return;
+                      }
+                      setScreenState({ screen: 'hed', hwId });
+                    }}
                     onNewHomework={() => {
+                      if (!userCan(user, 'homework.manage')) {
+                        showToast('Yetki Gerekli', 'Ödev oluşturmak için yöneticiden "Ödev yönetimi" yetkisi gerekir.');
+                        return;
+                      }
                       const newHw: Homework = {
                         id: Date.now(),
                         t: 'Yeni ödev',
@@ -1184,8 +1330,16 @@ export default function App() {
                     sessions={db.sessions}
                     sessionClasses={db.sessionClasses}
                     onSaveAttendance={(classId, sessionKey, attendanceMap) => {
+                      // Panel SQL rol hiyerarşisi: yoklama yalnız 'attendance.take' yetkisiyle.
+                      if (!userCan(user, 'attendance.take')) {
+                        showToast('Yetki Gerekli', 'Bu işlem için yöneticiden "Yoklama alma" yetkisi gerekir.');
+                        return;
+                      }
+                      const now = new Date();
                       const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
-                      const todayLabel = `${new Date().getDate()} ${months[new Date().getMonth()]}`;
+                      const todayLabel = `${now.getDate()} ${months[now.getMonth()]}`;
+                      // Panel SQL session_date (date) bekliyor — ISO biçiminde bugünün tarihi
+                      const fullDate = now.toISOString().slice(0, 10);
 
                       setDb((prev) => {
                         let newSessions = [...prev.sessions];
@@ -1220,6 +1374,28 @@ export default function App() {
                         };
                       });
 
+                      // ── Supabase yoklama köprüsü (panel stats_students.attendance_pct) ──
+                      // Sadece bu sınıftaki, pasif olmayan ve değeri olan öğrenciler yazılır.
+                      // attendance_records.status panelle birebir: 'g' / 'y' / 'i'.
+                      const classStudents = db.students.filter((s) => s.c === classId && !s.off);
+                      const records = classStudents
+                        .map((s) => {
+                          const status =
+                            (attendanceMap as Record<string, string>)[s.id] ||
+                            (sessionKey === 'new' ? 'g' : (s.a[Number(sessionKey)] || 'g'));
+                          return status === '-' ? null : { studentLocalId: String(s.id), status };
+                        })
+                        .filter(Boolean) as Array<{ studentLocalId: string; status: string }>;
+                      if (records.length) {
+                        void syncAttendanceToSupabase({
+                          sessionKey,
+                          classId,
+                          dateLabel: todayLabel,
+                          fullDate,
+                          records,
+                        });
+                      }
+
                       showToast('Yoklama Kaydedildi', 'Katılım durumları deftere işlendi.');
                     }}
                   />
@@ -1231,6 +1407,11 @@ export default function App() {
                     classes={db.classes}
                     broadcasts={db.broadcasts}
                     onSendMessage={(t, m, to, when) => {
+                      // Panel SQL rol hiyerarşisi: duyuru yalnız 'messages.send' yetkisiyle.
+                      if (!userCan(user, 'messages.send')) {
+                        showToast('Yetki Gerekli', 'Bu işlem için yöneticiden "Mesaj gönderme" yetkisi gerekir.');
+                        return;
+                      }
                       const targetIds = to as string[];
                       const newBroadcast: BroadcastMessage = {
                         id: Date.now(),
@@ -1264,6 +1445,17 @@ export default function App() {
                         when === null ? 'Gönderildi' : 'Planlandı',
                         `${to.length} öğrenciye ${when === null ? 'iletildi' : 'planlandı'}.`
                       );
+
+                      // ── Supabase mesaj köprüsü: messages + message_targets ──
+                      // Anlık gönderimde send_at = now; planlı gönderimde hedef zaman.
+                      // Zamanı gelen mesajları sunucu deliver_due_messages() dağıtır
+                      // (pg_cron) — böylece planlı bildirimler panelden de görünür olur.
+                      void sendMessageToSupabase({
+                        title: t,
+                        body: m,
+                        sendAt: when === null ? new Date() : new Date(when),
+                        studentLocalIds: targetIds,
+                      });
                     }}
                     onDeliverNow={(msgId) => {
                       setDb((prev) => {
@@ -1343,6 +1535,8 @@ export default function App() {
               : 0
           }
         />
+      )}
+      </>
       )}
     </AndroidFrame>
     </ErrorBoundary>

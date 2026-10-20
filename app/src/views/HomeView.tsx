@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Student, Topic, WordItem } from '../types.ts';
 import { okDate, stv, prog, wstat } from '../utils/logic.ts';
+import { passMark, goalRange } from '../utils/panelSettings.ts';
 import { sp } from '../utils/speech.ts';
 
 interface HomeViewProps {
@@ -35,7 +36,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   );
 
   const isTopicDone = (t: Topic) => {
-    return !!(student.td && student.td[t.id]) || (lastScores[t.id] || 0) >= 60;
+    return !!(student.td && student.td[t.id]) || (lastScores[t.id] || 0) >= passMark();
   };
 
   const doneCount = visibleTopics.filter(isTopicDone).length;
@@ -295,7 +296,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 </div>
                 <span
                   className={`text-xs font-extrabold px-2 py-0.5 rounded-md ${
-                    lastScores[t.id] != null && lastScores[t.id] >= 60
+                    lastScores[t.id] != null && lastScores[t.id] >= passMark()
                       ? 'bg-[var(--okbg)] text-[var(--ok)]'
                       : 'bg-[var(--bg)] text-[var(--mute)]'
                   }`}
@@ -363,16 +364,16 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <input
               id="gr"
               type="range"
-              min={5}
-              max={30}
+              min={goalRange().min}
+              max={goalRange().max}
               step={1}
-              value={student.goal}
+              value={Math.min(Math.max(student.goal, goalRange().min), goalRange().max)}
               onChange={(e) => onUpdateGoal(Number(e.target.value))}
               className="w-full accent-[var(--pri)] cursor-pointer"
             />
             <div className="flex justify-between text-xs text-[var(--mute)] font-semibold mt-1">
-              <span>5 kelime</span>
-              <span>30 kelime</span>
+              <span>{goalRange().min} kelime</span>
+              <span>{goalRange().max} kelime</span>
             </div>
             <p className="text-[11px] text-[var(--mute)] mt-2">
               Her gün en az 5 kelime. Kelimeleri flashcard kartlarıyla ezberlersin.

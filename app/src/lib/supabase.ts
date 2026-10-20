@@ -43,13 +43,51 @@ export async function updatePassword(newPassword: string) {
   return { data, error };
 }
 
-/** "Şifremi unuttum": e-postaya sıfırlama bağlantısı gönderir. */
+/**
+ * "Şifremi unuttum" talebi.
+ * Panel SQL'i (request_password_reset RPC) talebi help_requests tablosuna yazar;
+ * yönetici panelden görüp Edge Function (resolve_help) ile kapatır.
+ * Supabase'in kendi e-posta gönderimi de ayrıca denenir (SMTP yapılandırıldıysa öğrenci
+ * bağlantı da alır). Her iki yol başarısız olursa hata döner.
+ */
 export async function requestPasswordReset(email: string) {
-  const { error } = await supabase.auth.resetPasswordForEmail(
-    email.trim().toLowerCase(),
-    { redirectTo: `${location.origin}${location.pathname}` }
-  );
-  return { error };
+  const em = email.trim().toLowerCase();
+  let rpcErr: Error | null = null;
+  try {
+    const { error } = await supabase.rpc('request_password_reset', { p_email: em });
+    if (error) rpcErr = new Error(error.message);
+  } catch (e) {
+    rpcErr = e as Error;
+  }
+  // Bağlantı e-postası (best-effort; SMTP kapalıyza hata sayılmaz)
+  try {
+    await supabase.auth.resetPasswordForEmail(em, {
+      redirectTo: `${location.origin}${location.pathname}`,
+    });
+  } catch {
+    /* yok sayılır: yardım talebi zaten kaydedildi */
+  }
+  return { error: rpcErr };
+}
+
+/**
+ * Panel Edge Function'ı "admin-users" çağrısı (hesap açma/şifre/pasife alma/silme).
+ * Service-role anahtarı yalnızca sunucuda; istek kullanıcının JWT'siyle gider.
+ * Başarısız olursa hata nesnesi döner (uygulama lokal işlemlere devam edebilir).
+ */
+export async function invokeAdminUsers(body: Record<string, unknown>): Promise<{ ok?: boolean; id?: string; error?: string }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-users', { body });
+    if (error) {
+      const msg = String((error as any)?.context?.message || error.message || '');
+      let parsed: any = null;
+      try { parsed = JSON.parse(msg); } catch {}
+      return { error: parsed?.error || msg || 'Sunucu hatası' };
+    }
+    return (data ?? {}) as { ok?: boolean; id?: string; error?: string };
+  } catch (e) {
+    return { error: (e as Error).message || 'Bağlantı hatası' };
+  }
 }
 
 /** Sıfırlama bağlantısı açıldığında (type=recovery) aktif oturum var mı? */

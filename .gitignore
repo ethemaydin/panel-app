@@ -1,7 +1,2 @@
 node_modules/
 dist/
-*.local
-.env.local
-.env.*.local
-# NOT: app/.env bilincli olarak commit edilir (yalnizca PUBLIC anon key icerir).
-# service_role / private anahtar iceren hicbir dosya commit EDILEMEZ.
