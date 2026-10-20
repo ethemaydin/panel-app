@@ -1016,6 +1016,8 @@ export default function App() {
                       });
                       if (on) showToast('Hatırlatıcı Açıldı', `Her gün saat ${time} için hatırlandı.`);
                     }}
+                    onOpenBadges={() => setScreenState({ screen: 'badges' })}
+                    onOpenLeaderboard={() => setScreenState({ screen: 'rank' })}
                   />
                 )}
 
