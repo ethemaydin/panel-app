@@ -1,1 +1,0 @@
-# uygulamapanel1
