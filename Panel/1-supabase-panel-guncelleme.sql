@@ -264,27 +264,31 @@ begin
 end $$;
 
 -- C) Yoklama oturumları: sınıf kapsamı
+-- C) Yoklama oturumları: dersin öğrencileri üzerinden kapsam
+create or replace function public.lesson_in_scope(lid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select lid is not null and (
+    public.is_admin()
+    or exists (select 1 from public.lesson_students ls
+               where ls.lesson_id = lid and public.student_in_scope(ls.student_id))
+  )
+$$;
+revoke all on function public.lesson_in_scope(uuid) from public, anon;
+grant execute on function public.lesson_in_scope(uuid) to authenticated;
+
 drop policy if exists staff_read on public.attendance_sessions;
 drop policy if exists staff_ins on public.attendance_sessions;
 drop policy if exists staff_upd on public.attendance_sessions;
 drop policy if exists staff_del on public.attendance_sessions;
 create policy staff_read on public.attendance_sessions for select to authenticated
-  using (public.is_staff() and public.teaches(class_id));
+  using (public.is_staff() and public.lesson_in_scope(lesson_id));
 create policy staff_ins on public.attendance_sessions for insert to authenticated
-  with check (public.has_perm('attendance.take') and public.teaches(class_id));
+  with check (public.has_perm('attendance.take') and public.lesson_in_scope(lesson_id));
 create policy staff_upd on public.attendance_sessions for update to authenticated
-  using (public.has_perm('attendance.take') and public.teaches(class_id))
-  with check (public.has_perm('attendance.take') and public.teaches(class_id));
+  using (public.has_perm('attendance.take') and public.lesson_in_scope(lesson_id))
+  with check (public.has_perm('attendance.take') and public.lesson_in_scope(lesson_id));
 create policy staff_del on public.attendance_sessions for delete to authenticated
-  using (public.has_perm('attendance.take') and public.teaches(class_id));
-
--- D) Ödev cevapları ve bildirimler: sadece okuma
-drop policy if exists staff_read on public.homework_submissions;
-create policy staff_read on public.homework_submissions for select to authenticated
-  using (public.has_perm('homework.manage') and public.student_in_scope(student_id));
-drop policy if exists staff_read on public.notifications;
-create policy staff_read on public.notifications for select to authenticated
-  using (public.has_perm('messages.send') and public.student_in_scope(student_id));
+  using (public.has_perm('attendance.take') and public.lesson_in_scope(lesson_id));
 
 -- E) İlerleme tabloları: istatistik yetkisi + sınıf kapsamı
 do $$
