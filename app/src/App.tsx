@@ -22,7 +22,19 @@ import {
   genId,
 } from './utils/storage.ts';
 import { syncStudentProgress, syncFromSupabase, loadIdMap } from './utils/supabaseSync.ts';
-import { supabase } from './lib/supabase.ts';
+import { applyPanelSettings } from './utils/panelSettings.ts';
+import { supabase, invokeAdminUsers } from './lib/supabase.ts';
+
+/** Panelin geçme notu (app_settings.pass_mark; varsayılan %60) */
+export const passMark = () => {
+  const v = Number((window as any).__EB_PASSMARK);
+  return Number.isFinite(v) && v > 0 && v <= 100 ? v : 60;
+};
+/** Panelin günlük kelime hedefi aralığı (word_goal_min / word_goal_max) */
+export const goalRange = () => ({
+  min: Number((window as any).__EB_GOALMIN) || 5,
+  max: Number((window as any).__EB_GOALMAX) || 30,
+});
 import {
   shuf,
   today,
@@ -100,6 +112,9 @@ const MissingScreen: React.FC<{ label: string; onBack: () => void }> = ({ label,
   </div>
 );
 
+/** Supabase'de uuid eşlemesi olmayan (henüz hesap açılmamış) lokal öğrenciler için id öneki. */
+export const LOCAL_STU_PREFIX = 'lstu-';
+
 export default function App() {
   const [db, setDb] = useState(loadDatabase);
   const [user, setUser] = useState<User | null>(() => {
@@ -117,6 +132,20 @@ export default function App() {
   const [lastScores, setLastScores] = useState<Record<string, number>>({});
   const [toast, setToast] = useState<ToastData | null>(null);
   const [celebration, setCelebration] = useState<CelebrationData | null>(null);
+  // Panel bakım modu (app_settings.maintenance_message doluysa uygulama kilitlenir)
+  const [maintenance, setMaintenance] = useState<string>('');
+
+  // Panel ayarlarını çek ve uygula (renkler/logo/kelime hedefi/geçme notu/bakım mesajı).
+  // Bu çağrı olmadan panelin "Uygulama Ayarları" ekranı uygulamaya hiç yansımıyordu.
+  useEffect(() => {
+    let alive = true;
+    applyPanelSettings().then((s) => {
+      if (!alive) return;
+      const m = typeof s.maintenance_message === 'string' ? s.maintenance_message.trim() : '';
+      setMaintenance(m);
+    });
+    return () => { alive = false; };
+  }, []);
 
   // Sync database with localStorage
   useEffect(() => {
@@ -211,7 +240,10 @@ export default function App() {
             notifications: fresh.notifications,
             students: prev.students.map((ps) => {
               const fs = fresh.students.find((x) => x.id === ps.id);
-              return fs ? { ...ps, tp: fs.tp } : ps; // sadece erişim listesi senkronlanır
+              if (!fs) return ps;
+              // Sadece erişim listesi değil; öğretmenin panelden yaptığı sınıf/seviye/ad
+              // değişiklikleri de oturum içinde öğrenci/öğretmen ekranına yansısın.
+              return { ...ps, tp: fs.tp, c: fs.c ?? ps.c, lv: fs.lv ?? ps.lv, n: fs.n || ps.n };
             }),
           };
           saveDatabase(merged);
@@ -235,7 +267,12 @@ export default function App() {
           if (debounce) clearTimeout(debounce);
           debounce = setTimeout(refreshContent, 1500);
         };
-        ['topics', 'subtopics', 'questions', 'words', 'homework', 'homework_targets', 'topic_access', 'notifications'].forEach((table) => {
+        [
+          'topics', 'subtopics', 'questions', 'words', 'homework', 'homework_targets',
+          'topic_access', 'notifications', 'messages', 'profiles',
+          // 'classes' realtime: panelde sınıf adı değiştiğinde app'in mapClasses cache'i tazelenmeli
+          'classes',
+        ].forEach((table) => {
           supabase
             .channel(`rt-${table}`)
             .on('postgres_changes', { schema: 'public', event: '*', table }, onChange)
@@ -369,9 +406,9 @@ export default function App() {
         const students = [...prev.students];
         let s = { ...students[idx] };
 
-        // If topic test passed
+        // If topic test passed — geçme notu panelden gelir (app_settings.pass_mark)
         const topic = prev.topics.find((t) => t.id === key);
-        if (topic && pct >= 60) {
+        if (topic && pct >= passMark()) {
           s.tpass = { ...s.tpass, [topic.id]: true };
           const subs = topic.subs || [];
           const allSubsDone = subs.every((sub) => s.sd[sub.id]);
@@ -383,7 +420,7 @@ export default function App() {
         // Test count tracker for puzzle piece (each 5 test passes)
         s.cnt = s.cnt || {};
         const countKey = `${key}|${today()}`;
-        if (pct >= 60 && !s.cnt[countKey]) {
+        if (pct >= passMark() && !s.cnt[countKey]) {
           s.cnt = { ...s.cnt, [countKey]: 1 };
           s.tc = (s.tc || 0) + 1;
           if (s.tc % 5 === 0) {
@@ -526,6 +563,23 @@ export default function App() {
   return (
     <ErrorBoundary>
     <AndroidFrame theme={theme}>
+      {maintenance ? (
+        /* Panel bakım modu: admin app_settings.maintenance_message doldurduğunda uygulama kilitlenir */
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <span className="text-6xl">🛠️</span>
+          <h2 className="text-xl font-black text-[var(--ink)]">Bakım Çalışması</h2>
+          <p className="text-sm text-[var(--mute)] max-w-xs font-medium whitespace-pre-line">{maintenance}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="py-3 px-6 rounded-xl font-extrabold text-sm cursor-pointer shadow-md"
+            style={{ backgroundColor: 'var(--pri)', color: 'var(--onpri)' }}
+          >
+            Yenile
+          </button>
+        </div>
+      ) : (
+      <>
       <Toast toast={toast} onClose={() => setToast(null)} />
       <CelebrationModal
         data={celebration}
@@ -562,18 +616,12 @@ export default function App() {
                 return { ...prev, students };
               });
               setUser({ ...user, pw: newPw });
-              // Şifre değişikliğini Supabase profiline de işle (tek yönlü lokal güncelleme veri kaybına yol açıyordu)
-              (async () => {
-                try {
-                            const { data: { user: authUser } } = await supabase.auth.getUser();
-                  if (authUser) {
-                    await supabase
-                      .from('profiles')
-                      .update({ must_change_password: false })
-                      .eq('id', authUser.id);
-                  }
-                } catch {}
-              })();
+              // Panel SQL uyumu (hata A): protect_profile tetikleyicisi öğrencinin kendi
+              // profilinde must_change_password'u false yapmasını "Bu alan değiştirilemez"
+              // diyerek REDDEDER. ForcePasswordView zaten auth.updatePassword() ile şifreyi
+              // Supabase Auth'ta değiştirdi; app artık profiles'a doğrudan yazmıyor.
+              // (Not: Edge Function 'set_password' bayrağı true yapar — bu yüzden burada
+              // çağrılmaz; temizlik panelden/admin akışından yapılır.)
               showToast('Şifre Belirlendi', 'Yeni şifreniz başarıyla kaydedildi.');
             }}
           />
@@ -1343,6 +1391,8 @@ export default function App() {
               : 0
           }
         />
+      )}
+      </>
       )}
     </AndroidFrame>
     </ErrorBoundary>
