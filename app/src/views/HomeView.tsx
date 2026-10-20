@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Student, Topic, WordItem } from '../types.ts';
-import { okDate, stv, prog, wstat } from '../utils/logic.ts';
+import { okDate, stv, prog, wstat, computeStreak } from '../utils/logic.ts';
 import { sp } from '../utils/speech.ts';
 
 interface HomeViewProps {
@@ -11,6 +11,8 @@ interface HomeViewProps {
   onOpenTopic: (topicId: string) => void;
   onStartQuiz: (key: string) => void;
   onStartCards: () => void;
+  onOpenBadges: () => void;
+  onOpenLeaderboard: () => void;
   onUpdateGoal: (newGoal: number) => void;
   onUpdateReminder: (on: boolean, time: string) => void;
 }
@@ -23,6 +25,8 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onOpenTopic,
   onStartQuiz,
   onStartCards,
+  onOpenBadges,
+  onOpenLeaderboard,
   onUpdateGoal,
   onUpdateReminder,
 }) => {
@@ -99,6 +103,38 @@ export const HomeView: React.FC<HomeViewProps> = ({
           <span>🧩</span>
           <span>{student.cp.length}</span>
         </span>
+      </div>
+
+      {/* Quick Stats: Streak + Shortcuts */}
+      <div className="flex gap-2">
+        <div
+          className="flex-1 flex items-center gap-2 p-3 rounded-2xl border shadow-sm"
+          style={{ backgroundColor: 'var(--card)', borderColor: 'var(--line)' }}
+        >
+          <span className="text-xl">🔥</span>
+          <div className="min-w-0">
+            <b className="block text-sm font-extrabold text-[var(--ink)] leading-tight">
+              {computeStreak(student.dz || [])} gün seri
+            </b>
+            <span className="text-[11px] text-[var(--mute)]">üst üste çalışma</span>
+          </div>
+        </div>
+        <button
+          onClick={onOpenBadges}
+          className="flex-1 flex items-center justify-center gap-2 p-3 rounded-2xl border cursor-pointer transition-all hover:border-[var(--pri)] shadow-sm active:scale-98"
+          style={{ backgroundColor: 'var(--card)', borderColor: 'var(--line)' }}
+        >
+          <span className="text-xl">🏅</span>
+          <span className="text-xs font-bold text-[var(--ink)]">Başarımlar</span>
+        </button>
+        <button
+          onClick={onOpenLeaderboard}
+          className="flex-1 flex items-center justify-center gap-2 p-3 rounded-2xl border cursor-pointer transition-all hover:border-[var(--pri)] shadow-sm active:scale-98"
+          style={{ backgroundColor: 'var(--card)', borderColor: 'var(--line)' }}
+        >
+          <span className="text-xl">🏆</span>
+          <span className="text-xs font-bold text-[var(--ink)]">Sıra</span>
+        </button>
       </div>
 
       {/* Segment Switcher */}

@@ -31,6 +31,9 @@ import {
   pn,
   setHwRecord,
   dedupeOptions,
+  quizPoints,
+  lvl,
+  iso,
 } from './utils/logic.ts';
 import { AndroidFrame } from './components/AndroidFrame.tsx';
 import { Navigation } from './components/Navigation.tsx';
@@ -52,6 +55,8 @@ import { WritingHomeworkView } from './views/WritingHomeworkView.tsx';
 import { CalendarView } from './views/CalendarView.tsx';
 import { NotificationsView } from './views/NotificationsView.tsx';
 import { AccountView } from './views/AccountView.tsx';
+import { BadgesView } from './views/BadgesView.tsx';
+import { LeaderboardView } from './views/LeaderboardView.tsx';
 
 // Teacher Views
 import { StudentsView } from './views/StudentsView.tsx';
@@ -79,7 +84,9 @@ type ScreenState =
   | { screen: 'ted'; id: string }
   | { screen: 'sed'; id: string; sid: string }
   | { screen: 'hed'; hwId: number }
-  | { screen: 'led'; lid: number; oc?: number | null };
+  | { screen: 'led'; lid: number; oc?: number | null }
+  | { screen: 'badges' }
+  | { screen: 'rank' };
 
 /** Referans alınan içerik bulunamadığında gösterilen güvenli ara ekran. */
 const MissingScreen: React.FC<{ label: string; onBack: () => void }> = ({ label, onBack }) => (
@@ -304,6 +311,12 @@ export default function App() {
       const d = wstat({ ...s });
       s.day = { d: d.d, n: d.n + 1 };
 
+      // Günlük seri (streak): bugün çalışılan günler listesine işlenir
+      const dzToday = iso(new Date());
+      if (!(s.dz || []).includes(dzToday)) {
+        s.dz = [...(s.dz || []), dzToday];
+      }
+
       students[idx] = s;
       return { ...prev, students };
     });
@@ -324,6 +337,17 @@ export default function App() {
       s.td = { ...s.td, [topicId]: true };
       const nextId = ++s.nxt;
       s.cp = [...s.cp, nextId];
+
+      // Konu bitirme bonusu: +20 puan
+      const beforeLvl = lvl(s.p || 0).level;
+      s.p = (s.p || 0) + 20;
+      if (lvl(s.p).level > beforeLvl) {
+        setTimeout(
+          () => showCelebration(`🏅 Seviye ${lvl(s.p).level}!`, `Toplam ${s.p} puana ulaştın.`),
+          1200
+        );
+      }
+
       students[idx] = s;
 
       showCelebration('🎉 Konu tamamlandı!', topic.t, nextId);
@@ -378,6 +402,27 @@ export default function App() {
           if (allSubsDone && !s.td[topic.id]) {
             setTimeout(() => handleCompleteTopic(topic.id), 500);
           }
+        }
+
+        // Puan + seviye sistemi: geçilen her test puan kazandırır
+        const gained = quizPoints(score, total);
+        if (gained > 0) {
+          const before = lvl(s.p || 0).level;
+          s.p = (s.p || 0) + gained;
+          const after = lvl(s.p).level;
+          if (after > before) {
+            setTimeout(
+              () => showCelebration(`🏅 Seviye ${after}!`, `Tebrikler, yeni seviyeye ulaştın. Toplam ${s.p} puan.`),
+              800
+            );
+          }
+        }
+        if (pct === 100 && total > 0) s.bd = { ...s.bd, perfect: true };
+
+        // Günlük seri: test çözmek de "çalışma" sayılır
+        if (total > 0) {
+          const dzToday = iso(new Date());
+          if (!(s.dz || []).includes(dzToday)) s.dz = [...(s.dz || []), dzToday];
         }
 
         // Test count tracker for puzzle piece (each 5 test passes)
@@ -869,7 +914,21 @@ export default function App() {
             ) : (
               <MissingScreen onBack={goMain} label="Öğrenci detayı" />
             );
-          })() : screenState.screen === 'cls' ? (
+          })() : screenState.screen === 'badges' ? (
+          currentStudent ? (
+          <BadgesView student={currentStudent} onBack={() => setScreenState({ screen: 'main' })} />
+          ) : (
+            <MissingScreen onBack={goMain} label="Başarımlar" />
+          )
+        ) : screenState.screen === 'rank' ? (
+          <LeaderboardView
+            students={db.students}
+            classes={db.classes}
+            currentStudentId={user?.role === 's' ? user.si : undefined}
+            classFilter={user?.role === 's' ? currentStudent?.c : undefined}
+            onBack={() => setScreenState({ screen: 'main' })}
+          />
+        ) : screenState.screen === 'cls' ? (
           <ClassesEditorView
             classes={db.classes}
             students={db.students}
@@ -957,6 +1016,8 @@ export default function App() {
                       });
                       if (on) showToast('Hatırlatıcı Açıldı', `Her gün saat ${time} için hatırlandı.`);
                     }}
+                    onOpenBadges={() => setScreenState({ screen: 'badges' })}
+                    onOpenLeaderboard={() => setScreenState({ screen: 'rank' })}
                   />
                 )}
 

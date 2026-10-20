@@ -53,6 +53,8 @@ export interface Student {
   wl: number; // words learned count
   tpass: Record<string, boolean>; // tests passed >= 60%
   day?: { d: string; n: number }; // daily word study progress
+  dz?: string[]; // çalışılan günler (ISO 'YYYY-MM-DD') — seri/streak hesabı için
+  bd?: { perfect?: boolean }; // özel başarımlar (örn. %100 test)
   rem?: { on: boolean; time: string };
   act?: ActivePuzzle | null;
   av?: StudentAvatar;
