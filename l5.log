@@ -1,0 +1,3 @@
+psql:sql/SIFIRDAN-KURULUM.sql:105: ERROR:  loop variable of loop over rows must be a record variable or list of scalar variables
+LINE 51:     for r2 in select (rec).conname, (rec).child from (
+                 ^

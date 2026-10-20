@@ -1,0 +1,9 @@
+psql:sql/SIFIRDAN-KURULUM.sql:117: NOTICE:  constraint "profiles_class_fk" of relation "profiles" does not exist, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:122: NOTICE:  column "full_name" of relation "profiles" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:235: NOTICE:  column "level" of relation "profiles" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:265: NOTICE:  relation "profiles" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:272: NOTICE:  relation "classes" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:282: NOTICE:  relation "words" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:293: NOTICE:  relation "topics" already exists, skipping
+psql:sql/SIFIRDAN-KURULUM.sql:373: ERROR:  foreign key constraint "words_learned_word_id_fkey" cannot be implemented
+DETAIL:  Key columns "word_id" and "id" are of incompatible types: uuid and integer.

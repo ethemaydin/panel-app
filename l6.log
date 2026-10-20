@@ -1,0 +1,3 @@
+psql:sql/SIFIRDAN-KURULUM.sql:86: ERROR:  default for column "id" cannot be cast automatically to type uuid
+CONTEXT:  SQL statement "alter table public.topics alter column id type uuid using ('00000000-0000-0000-0000-' || lpad(id::text, 12, '0'))::uuid"
+PL/pgSQL function inline_code_block line 26 at EXECUTE
