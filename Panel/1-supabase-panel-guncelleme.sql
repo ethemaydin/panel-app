@@ -1,19 +1,14 @@
 -- =====================================================================
--- English Base - Panel güncellemesi (yetkiler, işlem kaydı, ayarlar, istatistik)
+-- English Base - Panel güncellemesi (DÜZELTİLMİŞ SÜRÜM, tek parça)
 -- ÖNCE 'supabase-kurulum.sql' çalıştırılmış olmalı.
--- Supabase > SQL Editor > New query > hepsini yapıştır > Run.
+-- Supabase > SQL Editor > New query > hepsini yapıştır > Run (TEK SEFERDE).
 -- Tekrar çalıştırmak güvenlidir.
 -- =====================================================================
 
--- ---------- 0) TEK SEFERDE CALISTIRIN - ON KONTROL ----------
--- Bu dosya Supabase SQL Editor'de BAŞTAN SONA TEK SEFERDE çalıştırılmalıdır.
--- Neden: profiles.class_id gibi sütunlar bu dosyanın İLK bölümünde eklenir; ara verip
--- alıp parça parça çalıştırırsanız sonraki bölümler sütunu göremez ve
--- "ERROR 42703: column class_id does not exist" alırsınız.
--- Güvenlik: aşağıdaki ön kontrol, tablo yoksa anlamlı mesaj verir.
+-- ---------- 0) ÖN KONTROL ----------
 do $$ begin
   if not exists (select 1 from pg_tables where schemaname='public' and tablename='profiles') then
-    raise exception 'public.profiles tablosu bulunamadı. ONCE supabase-kurulum.sql dosyasını çalıştırın, sonra bu dosyayı baştan sona tek seferde çalıştırın.';
+    raise exception 'public.profiles tablosu bulunamadı. ONCE supabase-kurulum.sql dosyasını çalıştırın.';
   end if;
   if not exists (select 1 from pg_tables where schemaname='public' and tablename='classes') then
     raise exception 'public.classes tablosu bulunamadı. ONCE supabase-kurulum.sql dosyasını çalıştırın.';
@@ -21,21 +16,91 @@ do $$ begin
 end $$;
 
 -- ---------- 1) YENİ ALANLAR VE TABLOLAR ----------
--- Eski kurulum semasında bulunmayan sütunlar burada eklenir (tekrar çalıştırmak güvenli).
--- DIKKAT: Bu satırlar dosyadaki kendisini kullanan HİÇBİR bloktan önce gelmelidir.
 alter table public.profiles add column if not exists class_id uuid references public.classes(id) on delete set null;
 alter table public.profiles add column if not exists level text not null default 'A1';
 alter table public.profiles add column if not exists active boolean not null default true;
 alter table public.profiles add column if not exists must_change_password boolean not null default false;
 alter table public.profiles add column if not exists perms jsonb not null default '{}';
 alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists created_at timestamptz not null default now();
 
--- E-posta normalizasyonu: tüm giriş noktalarında küçük harfe indirgenecek.
+-- Eski kurulumda profiles.level sayısal (integer) olabilir; 'A1','A2'... metnine çevrilir.
+-- Eşleme: 1=A1, 2=A2, 3=B1, 4=B2, 5=C1, 6=C2, diğer/boş=A1
+do $$
+declare dt text; c record;
+begin
+  select data_type into dt from information_schema.columns
+   where table_schema='public' and table_name='profiles' and column_name='level';
+  if dt in ('integer','smallint','bigint','numeric') then
+    for c in select conname from pg_constraint
+             where conrelid = 'public.profiles'::regclass and contype = 'c'
+               and pg_get_constraintdef(oid) ilike '%level%'
+    loop
+      execute format('alter table public.profiles drop constraint %I', c.conname);
+    end loop;
+    alter table public.profiles alter column level drop default;
+    alter table public.profiles alter column level type text using (
+      case level::int when 1 then 'A1' when 2 then 'A2' when 3 then 'B1'
+                      when 4 then 'B2' when 5 then 'C1' when 6 then 'C2' else 'A1' end);
+    update public.profiles set level = 'A1' where level is null;
+    alter table public.profiles alter column level set default 'A1';
+    alter table public.profiles alter column level set not null;
+  end if;
+end $$;
+
+-- Yardımcı tablolar (yoksa oluşturulur, varsa eksik sütunlar eklenir)
+create table if not exists public.teacher_classes (
+  teacher_id uuid not null references public.profiles(id) on delete cascade,
+  class_id   uuid not null references public.classes(id) on delete cascade,
+  primary key (teacher_id, class_id)
+);
+
+create table if not exists public.app_settings (
+  key text primary key,
+  value jsonb
+);
+
+create table if not exists public.audit_log (
+  id bigint generated always as identity primary key,
+  at timestamptz not null default now()
+);
+alter table public.audit_log add column if not exists at timestamptz not null default now();
+alter table public.audit_log add column if not exists actor uuid;
+alter table public.audit_log add column if not exists actor_name text;
+alter table public.audit_log add column if not exists action text;
+alter table public.audit_log add column if not exists table_name text;
+alter table public.audit_log add column if not exists row_id text;
+alter table public.audit_log add column if not exists detail jsonb;
+
+create table if not exists public.help_requests (
+  id uuid primary key default gen_random_uuid(),
+  email text,
+  status text not null default 'open',
+  created_at timestamptz not null default now()
+);
+alter table public.help_requests add column if not exists email text;
+alter table public.help_requests add column if not exists status text not null default 'open';
+alter table public.help_requests add column if not exists created_at timestamptz not null default now();
+alter table public.help_requests add column if not exists resolved_at timestamptz;
+alter table public.help_requests add column if not exists resolved_by uuid;
+
+-- Planlı bildirimler için gerekli sütunlar (tablo varsa)
+do $$ begin
+  if to_regclass('public.messages') is not null then
+    alter table public.messages add column if not exists sent boolean not null default false;
+    alter table public.messages add column if not exists sent_at timestamptz;
+    alter table public.messages add column if not exists send_at timestamptz not null default now();
+  end if;
+  if to_regclass('public.notifications') is not null then
+    alter table public.notifications add column if not exists message_id uuid;
+  end if;
+end $$;
+
+-- E-posta normalizasyonu
 create or replace function public.norm_email(e text) returns text
 language sql immutable as $$ select lower(btrim(coalesce(e,''))) $$;
 
--- auth.users oluşturulunca profiles satırı otomatik açılsın (Edge Function bunu garanti
--- etse de, Supabase Auth arayüzünden açılan hesaplar için tetikleyici gerekir).
+-- auth.users oluşunca profiles satırı otomatik açılsın
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -44,11 +109,11 @@ begin
     new.id,
     public.norm_email(new.email),
     coalesce(new.raw_user_meta_data->>'full_name', ''),
-    coalesce(new.raw_user_meta_data->>'role', 'student'),
-    (new.raw_user_meta_data->>'class_id')::uuid,
-    coalesce(new.raw_user_meta_data->>'level', 'A1'),
+    coalesce(nullif(new.raw_user_meta_data->>'role',''), 'student'),
+    nullif(new.raw_user_meta_data->>'class_id','')::uuid,
+    coalesce(nullif(new.raw_user_meta_data->>'level',''), 'A1'),
     true,
-    coalesce((new.raw_user_meta_data->>'must_change_password')::boolean, false),
+    coalesce(nullif(new.raw_user_meta_data->>'must_change_password','')::boolean, false),
     '{}'
   )
   on conflict (id) do update
@@ -60,7 +125,6 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- profiles tarafında da e-postayı her yazılışta normalize et (RLS bypass'ı yok: service role dahil tutarlı).
 create or replace function public.norm_profile_email() returns trigger
 language plpgsql as $$ begin
   if new.email is not null then new.email := public.norm_email(new.email); end if;
@@ -71,7 +135,13 @@ create trigger profile_email_norm before insert or update of email on public.pro
   for each row execute function public.norm_profile_email();
 
 -- ---------- 2) YETKİ FONKSİYONLARI ----------
--- Yardımcılar (kurulum dosyasında varsa tekrar oluşturulmaz, yoksa panel tek başına da çalışır)
+-- Dönüş tipi değişmiş olabilecek eski fonksiyonlar önce silinir (yetkiler aşağıda yeniden verilir)
+drop function if exists public.deliver_due_messages();
+drop function if exists public.request_password_reset(text);
+drop function if exists public.resolve_help_request(uuid);
+drop function if exists public.stats_students();
+drop function if exists public.stats_teachers();
+
 create or replace function public.is_staff() returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (select 1 from public.profiles
@@ -84,10 +154,43 @@ language sql stable security definer set search_path = public as $$
     where id = auth.uid() and active and role = 'admin')
 $$;
 
+-- Admin her şeyi yapar. Öğretmen sadece panelde işaretlenen yetkileri kullanır.
+create or replace function public.has_perm(p text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles
+    where id = auth.uid() and active
+      and (role = 'admin' or (role = 'teacher' and coalesce((perms->>p)::boolean, false))))
+$$;
+
+-- Öğretmen bu sınıfa erişebilir mi? (admin / 'all_classes' yetkisi / atandığı sınıflar)
+create or replace function public.teaches(cid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select cid is not null and exists (select 1 from public.profiles me
+    where me.id = auth.uid() and me.active
+      and (me.role = 'admin'
+           or (me.role = 'teacher' and (coalesce((me.perms->>'all_classes')::boolean, false)
+                or exists (select 1 from public.teacher_classes tc where tc.teacher_id = me.id and tc.class_id = cid)))))
+$$;
+
+create or replace function public.student_in_scope(sid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles s
+    where s.id = sid and s.role = 'student'
+      and ((s.class_id is null and public.has_perm('all_classes')) or public.teaches(s.class_id)))
+$$;
+
+-- Yoklama oturumunun kapsamı: oturumun sınıf sütunu yok, ders öğrencileri üzerinden hesaplanır
+create or replace function public.lesson_in_scope(lid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select lid is not null and (
+    public.is_admin()
+    or exists (select 1 from public.lesson_students ls
+               where ls.lesson_id = lid and public.student_in_scope(ls.student_id))
+  )
+$$;
+
 -- Planlı bildirimleri zamanı gelince öğrencilere dağıtır.
--- Supabase > Database > Extensions > pg_cron açıksa:
---   select cron.schedule('deliver-messages','* * * * *','select public.deliver_due_messages()');
--- Kapalıysa panel "Bildirimler" sayfasını açtığında çalışır.
+-- pg_cron açıksa: select cron.schedule('deliver-messages','* * * * *','select public.deliver_due_messages()');
 create or replace function public.deliver_due_messages() returns int
 language plpgsql security definer set search_path = public as $$
 declare n int := 0; r record;
@@ -107,35 +210,7 @@ begin
   return n;
 end $$;
 
--- Yönetici (admin) her şeyi yapar. Öğretmen sadece panelde işaretlenen yetkileri kullanır.
-create or replace function public.has_perm(p text) returns boolean
-language sql stable security definer set search_path = public as $$
-  -- p alan adı 'a-b' gibi tire içeremez; jsonb tıklama (->>) için güvenli.
-  select exists (select 1 from public.profiles
-    where id = auth.uid() and active
-      and (role = 'admin' or (role = 'teacher' and coalesce((perms->>p)::boolean, false))))
-$$;
-
--- Öğretmen bu sınıfa erişebilir mi? (admin: evet, 'all_classes' yetkisi: evet, yoksa atandığı sınıflar)
--- NOT: public.classes cid bulunamazsa NULL döner; "cid is null and all_classes" kısayolu
--- yanlışlıkla silinmiş/atanmamış sınıf id'lerini herkese açık hale getiriyordu — kaldırıldı.
-create or replace function public.teaches(cid uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select cid is not null and exists (select 1 from public.profiles me
-    where me.id = auth.uid() and me.active
-      and (me.role = 'admin'
-           or (me.role = 'teacher' and (coalesce((me.perms->>'all_classes')::boolean, false)
-                or exists (select 1 from public.teacher_classes tc where tc.teacher_id = me.id and tc.class_id = cid)))))
-$$;
-
-create or replace function public.student_in_scope(sid uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.profiles s
-    where s.id = sid and s.role = 'student'
-      and ((s.class_id is null and public.has_perm('all_classes')) or public.teaches(s.class_id)))
-$$;
-
--- Şifre sıfırlama talebi açma (anonim): e-posta normalize edilir, spam koruması vardır.
+-- Şifre sıfırlama talebi (anonim): e-posta normalize edilir, 5 dk spam koruması
 create or replace function public.request_password_reset(p_email text) returns void
 language plpgsql security definer set search_path = public as $$
 declare em text := public.norm_email(p_email);
@@ -143,7 +218,6 @@ begin
   if em = '' or position('@' in em) = 0 then
     raise exception 'Geçerli bir e-posta yaz';
   end if;
-  -- Aynı e-posta için son 5 dakikada açık talep varsa yenisini eklemeyi reddet.
   if exists (select 1 from public.help_requests h
               where h.email = em and h.status = 'open' and h.created_at > now() - interval '5 minutes') then
     return;
@@ -151,7 +225,7 @@ begin
   insert into public.help_requests (email) values (em);
 end $$;
 
--- Talebi kapatma (yalnızca yönetici). Panel bunu Edge Function üzerinden de kullanabilir.
+-- Talebi kapatma (yalnızca yönetici)
 create or replace function public.resolve_help_request(p_id uuid) returns void
 language plpgsql security definer set search_path = public as $$
 begin
@@ -161,19 +235,23 @@ begin
    where id = p_id and status = 'open';
 end $$;
 
+-- Execute yetkileri: önce hepsini kapat, sonra gerekenleri aç
+revoke all on function public.request_password_reset(text) from public, anon, authenticated;
+revoke all on function public.resolve_help_request(uuid) from public, anon, authenticated;
+revoke all on function public.deliver_due_messages() from public, anon, authenticated;
+revoke all on function public.lesson_in_scope(uuid) from public, anon, authenticated;
 grant execute on function public.request_password_reset(text) to anon, authenticated;
 grant execute on function public.resolve_help_request(uuid) to authenticated;
-revoke all on function public.request_password_reset(text) from public;
-revoke all on function public.resolve_help_request(uuid) from public;
+grant execute on function public.deliver_due_messages() to authenticated;
+grant execute on function public.lesson_in_scope(uuid) to authenticated;
 
--- ---------- 3) PROFİL KORUMASI (v2) ----------
--- Admin: serbest. Öğretmen: sadece öğrencileri ve sadece yetkisi olan alanları değiştirebilir.
--- Öğrenci/öğretmen kendi rolünü, yetkisini, sınıfını vs. değiştiremez.
+-- ---------- 3) PROFİL KORUMASI ----------
 create or replace function public.protect_profile() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  if auth.uid() is null then return coalesce(new, old); end if;   -- service role / cron: serbest
-  if new is null then return null; end if;                        -- silme: kontrol yok, audit yeter
+  -- Silme: bu tetikleyici engellemez (yetkiyi RLS belirler). NULL döndürmek silmeyi iptal ederdi.
+  if TG_OP = 'DELETE' then return old; end if;
+  if auth.uid() is null then return new; end if;                  -- service role / cron: serbest
   if public.is_admin() then return new; end if;
   if new.id is distinct from old.id or new.role is distinct from old.role
      or new.perms is distinct from old.perms then
@@ -187,7 +265,8 @@ begin
       if new.class_id is not null and not public.teaches(new.class_id) then
         raise exception 'Bu sınıfa öğrenci taşıma yetkin yok'; end if;
     end if;
-    if (new.full_name is distinct from old.full_name or new.level is distinct from old.level or new.email is distinct from old.email
+    if (new.full_name is distinct from old.full_name or new.level is distinct from old.level
+        or new.email is distinct from old.email
         or new.must_change_password is distinct from old.must_change_password)
        and not public.has_perm('students.edit') then
       raise exception 'Öğrenci bilgisi düzenleme yetkin yok'; end if;
@@ -203,14 +282,12 @@ begin
   return new;
 end $$;
 
--- DİKKAT (önceki sürümdeki eksik): protect_profile fonksiyonu tanımlanmış ama tabloya
--- hiç bağlanmamıştı — koruma fiilen çalışmıyordu. Aşağıdaki tetikleyici bunu tamamlar.
 drop trigger if exists profile_protect on public.profiles;
 create trigger profile_protect before update or delete on public.profiles
   for each row execute function public.protect_profile();
 
--- ---------- 4) GÜVENLİK KURALLARI (RLS) YENİDEN ----------
--- Eski "öğretmen her şeyi yapar" kuralı kaldırılıp yetkiye bağlı kurallar konuyor.
+-- ---------- 4) GÜVENLİK KURALLARI (RLS) ----------
+-- Eski "staff_all" kuralları kaldırılır (olmayan tablolar atlanır)
 do $$
 declare t text;
 begin
@@ -218,11 +295,12 @@ begin
     'homework','homework_targets','homework_submissions','lessons','lesson_students',
     'attendance_sessions','attendance_records','messages','message_targets','notifications']
   loop
+    continue when to_regclass('public.'||t) is null;
     execute format('drop policy if exists staff_all on public.%I', t);
   end loop;
 end $$;
 
--- A) Genel içerik: herkes (öğretmen) okur, yazma yetkiye bağlı
+-- A) Genel içerik: öğretmenler okur, yazma yetkiye bağlı
 do $$
 declare r record;
 begin
@@ -232,6 +310,7 @@ begin
     ('words','words.manage'),
     ('homework','homework.manage'), ('lessons','lessons.manage'), ('messages','messages.send')
   ) as v(tbl, perm) loop
+    continue when to_regclass('public.'||r.tbl) is null;
     execute format('drop policy if exists staff_read on public.%I', r.tbl);
     execute format('drop policy if exists staff_ins on public.%I', r.tbl);
     execute format('drop policy if exists staff_upd on public.%I', r.tbl);
@@ -243,7 +322,7 @@ begin
   end loop;
 end $$;
 
--- B) Öğrenciye bağlı tablolar: yetki + öğretmenin sınıf kapsamı
+-- B) Öğrenciye bağlı tablolar: yetki + sınıf kapsamı (student_id sütunu olmayan tablo atlanır)
 do $$
 declare r record;
 begin
@@ -252,6 +331,12 @@ begin
     ('lesson_students','lessons.manage'), ('message_targets','messages.send'),
     ('attendance_records','attendance.take')
   ) as v(tbl, perm) loop
+    continue when to_regclass('public.'||r.tbl) is null;
+    if not exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name=r.tbl and column_name='student_id') then
+      raise notice 'Atlandı (student_id sütunu yok): %', r.tbl;
+      continue;
+    end if;
     execute format('drop policy if exists staff_read on public.%I', r.tbl);
     execute format('drop policy if exists staff_ins on public.%I', r.tbl);
     execute format('drop policy if exists staff_upd on public.%I', r.tbl);
@@ -263,19 +348,7 @@ begin
   end loop;
 end $$;
 
--- C) Yoklama oturumları: sınıf kapsamı
--- C) Yoklama oturumları: dersin öğrencileri üzerinden kapsam
-create or replace function public.lesson_in_scope(lid uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select lid is not null and (
-    public.is_admin()
-    or exists (select 1 from public.lesson_students ls
-               where ls.lesson_id = lid and public.student_in_scope(ls.student_id))
-  )
-$$;
-revoke all on function public.lesson_in_scope(uuid) from public, anon;
-grant execute on function public.lesson_in_scope(uuid) to authenticated;
-
+-- C) Yoklama oturumları: kapsam dersin öğrencileri üzerinden (tabloda class_id YOK)
 drop policy if exists staff_read on public.attendance_sessions;
 drop policy if exists staff_ins on public.attendance_sessions;
 drop policy if exists staff_upd on public.attendance_sessions;
@@ -290,13 +363,24 @@ create policy staff_upd on public.attendance_sessions for update to authenticate
 create policy staff_del on public.attendance_sessions for delete to authenticated
   using (public.has_perm('attendance.take') and public.lesson_in_scope(lesson_id));
 
--- E) İlerleme tabloları: istatistik yetkisi + sınıf kapsamı
+-- D) Ödev cevapları ve bildirimler: sadece okuma
+drop policy if exists staff_read on public.homework_submissions;
+create policy staff_read on public.homework_submissions for select to authenticated
+  using (public.has_perm('homework.manage') and public.student_in_scope(student_id));
+drop policy if exists staff_read on public.notifications;
+create policy staff_read on public.notifications for select to authenticated
+  using (public.has_perm('messages.send') and public.student_in_scope(student_id));
+
+-- E) İlerleme tabloları: istatistik yetkisi + sınıf kapsamı (olmayan tablo / sütun atlanır)
 do $$
 declare t text;
 begin
   foreach t in array array['subtopic_done','topic_pass','topic_complete','test_attempts',
     'words_learned','daily_words','puzzle_state','puzzles_done']
   loop
+    continue when to_regclass('public.'||t) is null;
+    continue when not exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name=t and column_name='student_id');
     execute format('drop policy if exists staff_read on public.%I', t);
     execute format('create policy staff_read on public.%I for select to authenticated using (public.has_perm(%L) and public.student_in_scope(student_id))', t, 'stats.view');
   end loop;
@@ -328,7 +412,7 @@ create policy admin_all on public.teacher_classes for all to authenticated
 create policy own_read on public.teacher_classes for select to authenticated
   using (teacher_id = auth.uid());
 
--- H) Ayarlar: herkes okur (uygulama tasarımı), sadece admin yazar
+-- H) Ayarlar: herkes okur, sadece admin yazar
 alter table public.app_settings enable row level security;
 drop policy if exists settings_read on public.app_settings;
 drop policy if exists settings_admin on public.app_settings;
@@ -342,12 +426,18 @@ drop policy if exists audit_admin_read on public.audit_log;
 create policy audit_admin_read on public.audit_log for select to authenticated
   using (public.is_admin());
 
+-- J) Yardım talepleri: sadece admin görür (yazma anonim fonksiyon üzerinden)
+alter table public.help_requests enable row level security;
+drop policy if exists help_admin_all on public.help_requests;
+create policy help_admin_all on public.help_requests for all to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+
 -- ---------- 5) İŞLEM KAYDI (kim ne yaptı) ----------
 create or replace function public.log_change() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare rec jsonb; nm text;
 begin
-  if auth.uid() is null then return null; end if;               -- sunucu işlemleri kendi kaydını yazar
+  if auth.uid() is null then return null; end if;
   if TG_TABLE_NAME = 'profiles' and not public.is_staff() then return null; end if;
   rec := case when TG_OP = 'DELETE' then to_jsonb(old) else to_jsonb(new) end;
   select full_name into nm from public.profiles where id = auth.uid();
@@ -363,6 +453,7 @@ begin
     'lessons','attendance_sessions','attendance_records','messages','teacher_classes','app_settings',
     'topic_access','homework_targets','lesson_students','message_targets']
   loop
+    continue when to_regclass('public.'||t) is null;
     execute format('drop trigger if exists audit_%s on public.%I', t, t);
     execute format('create trigger audit_%s after insert or update or delete on public.%I for each row execute function public.log_change()', t, t);
   end loop;
@@ -375,27 +466,28 @@ returns table (id uuid, full_name text, email text, class_id uuid, class_name te
                words_learned bigint, tests_taken bigint, puzzles bigint, hw_done bigint, hw_total bigint,
                attendance_pct numeric, level text, must_change_password boolean)
 language sql stable security definer set search_path = public as $$
-  select p.id, p.full_name, p.email, p.class_id, c.name, p.active, p.created_at, u.last_sign_in_at,
+  select p.id, p.full_name::text, p.email::text, p.class_id, c.name::text, p.active,
+    p.created_at, u.last_sign_in_at,
     (select count(*) from public.topic_complete x where x.student_id = p.id),
     (select count(*) from public.topic_access a where a.student_id = p.id),
     (select count(*) from public.words_learned w where w.student_id = p.id),
     (select count(*) from public.test_attempts t where t.student_id = p.id),
     (select count(*) from public.puzzles_done d where d.student_id = p.id),
     (select count(*) from public.homework_submissions s where s.student_id = p.id
-        and (s.score is not null or coalesce(s.text_answer, '') <> '')),
+        and s.submitted_at is not null),
     (select count(*) from public.homework_targets h where h.student_id = p.id),
-    (select round(100.0 * count(*) filter (where r.status <> 'y') / nullif(count(*), 0), 0)
-        from public.attendance_records r where r.student_id = p.id),
-    coalesce(p.level, 'A1'),
+    -- Yoklama: oturumlardaki present/absent dizilerinden hesaplanır
+    (select round(100.0 * count(*) filter (where p.id::text = any(s.present::text[]))
+                  / nullif(count(*), 0), 0)
+        from public.attendance_sessions s
+        where p.id::text = any(s.present::text[]) or p.id::text = any(s.absent::text[])),
+    coalesce(p.level, 'A1')::text,
     coalesce(p.must_change_password, false)
   from public.profiles p
   left join public.classes c on c.id = p.class_id
   left join auth.users u on u.id = p.id
-  -- Yetki tek seferde doğrulanır; öğrenci satırları için tekrar tekrar çalıştırılmaz.
   where public.has_perm('stats.view')
     and p.role = 'student'
-    -- Kapsam: admin / all_classes yetkisi ya da atandığı sınıflar. Sınıfsız öğrenciler
-    -- yalnızca admin veya all_classes yetkilisine görünür (önceki sürüm hepsini gösteriyordu).
     and (public.is_admin() or public.has_perm('all_classes')
          or (p.class_id is not null
              and exists (select 1 from public.teacher_classes ts
@@ -406,11 +498,10 @@ create or replace function public.stats_teachers()
 returns table (id uuid, full_name text, email text, role text, active boolean, created_at timestamptz,
                last_login timestamptz, actions_30d bigint, last_action timestamptz, classes text)
 language sql stable security definer set search_path = public as $$
-  -- Sadece yönetici öğretmen/yönetici listesini görür.
-  select p.id, p.full_name, p.email, p.role, p.active, p.created_at, u.last_sign_in_at,
+  select p.id, p.full_name::text, p.email::text, p.role::text, p.active, p.created_at, u.last_sign_in_at,
     (select count(*) from public.audit_log a where a.actor = p.id and a.at > now() - interval '30 days'),
     (select max(a.at) from public.audit_log a where a.actor = p.id),
-    (select string_agg(c.name, ', ') from public.teacher_classes tc
+    (select string_agg(c.name::text, ', ') from public.teacher_classes tc
         join public.classes c on c.id = tc.class_id where tc.teacher_id = p.id)
   from public.profiles p left join auth.users u on u.id = p.id
   where p.role in ('admin', 'teacher') and public.is_admin()
@@ -441,9 +532,6 @@ insert into public.app_settings (key, value) values
   ('maintenance_message', to_jsonb(''::text)),
   ('custom_css', to_jsonb(''::text))
 on conflict (key) do nothing;
-
--- ---------- 8) MEVCUT YÖNETİCİ TAM YETKİLİ ----------
--- (admin rolü zaten her şeyi yapar; ek işlem gerekmez)
 
 -- =====================================================================
 -- BİTTİ.
